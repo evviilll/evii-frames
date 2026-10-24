@@ -1,0 +1,171 @@
+name: iOS
+
+on:
+  push:
+    branches: [main, "cursor/**"]
+    tags: ["v*"]
+    paths-ignore:
+      - "docs/screenshots/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ipa:
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      RIFE_SIZES: "256x384,384x256,384x640,640x384,768x1280,1280x768,1088x1920,1920x1088"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache RIFE weights and Core ML packages
+        uses: actions/cache@v4
+        id: rife-cache
+        with:
+          path: |
+            tools/weights
+            build/models
+          key: rife425-${{ hashFiles('tools/rife425_net.py', 'tools/convert_rife425.py', 'tools/requirements.txt') }}-${{ env.RIFE_SIZES }}
+
+      - name: Convert RIFE 4.25
+        if: steps.rife-cache.outputs.cache-hit != 'true'
+        run: |
+          python3 -m pip install -r tools/requirements.txt
+          python3 tools/convert_rife425.py --check-only
+          python3 tools/convert_rife425.py --sizes "${RIFE_SIZES}" --out build/models
+
+      - name: Compile Core ML packages
+        run: |
+          set -euo pipefail
+          mkdir -p EviiFrames/Resources/Models build/benchmark
+          if [ -f build/models/benchmark-macos.json ]; then
+            cp build/models/benchmark-macos.json build/benchmark/benchmark-macos.json
+          fi
+          shopt -s nullglob
+          found=0
+          for package in build/models/*.mlpackage; do
+            xcrun coremlcompiler compile "${package}" EviiFrames/Resources/Models
+            found=1
+          done
+          if [ "${found}" -ne 1 ]; then
+            echo "no mlpackage in build/models" >&2
+            exit 1
+          fi
+          find EviiFrames/Resources/Models -name 'RIFE425_*.mlmodelc' -type d
+
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Pick an iPhone simulator
+        id: sim
+        run: |
+          python3 - << 'PY'
+          import json, subprocess
+          raw = subprocess.check_output(["xcrun", "simctl", "list", "devices", "available", "-j"])
+          data = json.loads(raw)
+          chosen = None
+          for runtime, devices in data.get("devices", {}).items():
+              if "iOS" not in runtime:
+                  continue
+              for device in devices:
+                  name = device.get("name", "")
+                  if not device.get("isAvailable") or "iPhone" not in name:
+                      continue
+                  rank = (1 if "Pro" not in name else 0, name)
+                  if chosen is None or rank > chosen[0]:
+                      chosen = (rank, device["udid"], name)
+          if not chosen:
+              raise SystemExit("no iPhone simulator")
+          print(f"udid={chosen[1]}")
+          print(f"name={chosen[2]}")
+          open("/tmp/sim.env", "w").write(f"UDID={chosen[1]}\nNAME={chosen[2]}\n")
+          PY
+          cat /tmp/sim.env >> "$GITHUB_ENV"
+
+      - name: Unit tests and simulator benchmark
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project EviiFrames.xcodeproj \
+            -scheme EviiFrames \
+            -destination "platform=iOS Simulator,id=${UDID}" \
+            -derivedDataPath build/DerivedData \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            ENABLE_DEBUG_DYLIB=NO \
+            | tee build/test.log
+          grep EVII_BENCH build/test.log > build/benchmark/benchmark-simulator.txt || true
+
+      - name: Simulator screenshots
+        run: |
+          APP="build/DerivedData/Build/Products/Debug-iphonesimulator/EviiFrames.app"
+          test -d "${APP}"
+          chmod +x ci/screenshots.sh
+          ci/screenshots.sh "${APP}" build/screenshots
+
+      - name: Unsigned IPA
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -project EviiFrames.xcodeproj \
+            -scheme EviiFrames \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath build/EviiFrames.xcarchive \
+            -derivedDataPath build/ArchiveDerived \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            ENABLE_DEBUG_DYLIB=NO
+          APP="build/EviiFrames.xcarchive/Products/Applications/EviiFrames.app"
+          test -d "${APP}"
+          rm -rf build/Payload
+          mkdir -p build/Payload
+          cp -R "${APP}" build/Payload/EviiFrames.app
+          rm -f build/EviiFrames-0.1.0-unsigned.ipa
+          (cd build && zip -qry EviiFrames-0.1.0-unsigned.ipa Payload)
+          unzip -l build/EviiFrames-0.1.0-unsigned.ipa | head
+
+      - name: Upload IPA, screenshots, timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evii-frames-0.1.0
+          if-no-files-found: warn
+          path: |
+            build/EviiFrames-0.1.0-unsigned.ipa
+            build/screenshots
+            build/benchmark
+            build/test.log
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: ipa
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: evii-frames-0.1.0
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/EviiFrames-0.1.0-unsigned.ipa
+          fail_on_unmatched_files: true
+          generate_release_notes: true
