@@ -130,13 +130,13 @@ enum VideoProbe {
 
     private static func dynamicRange(of description: CMFormatDescription) -> DynamicRangeKind {
         let subtype = CMFormatDescriptionGetMediaSubType(description)
-        let transfer = CMFormatDescriptionGetExtension(description, kCMFormatDescriptionExtension_TransferFunction).flatMap { value -> String? in
+        let transfer = CMFormatDescriptionGetExtension(description, extensionKey: kCMFormatDescriptionExtension_TransferFunction).flatMap { value -> String? in
             if let text = value as? String { return text }
             if let text = value as? NSString { return text as String }
             return nil
         }
         var atoms: [String] = []
-        if let box = CMFormatDescriptionGetExtension(description, kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms) as? NSDictionary {
+        if let box = CMFormatDescriptionGetExtension(description, extensionKey: kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms) as? NSDictionary {
             atoms = box.allKeys.compactMap { $0 as? String }
         }
         return dynamicRange(fourcc: fourcc(subtype), transfer: transfer, atomKeys: atoms)
