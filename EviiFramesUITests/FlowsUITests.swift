@@ -193,7 +193,7 @@ final class FlowsUITests: XCTestCase {
         for _ in 0..<8 {
             if isClear(app, element, bottomClearance: bottomClearance) { return }
             let frame = element.frame
-            if frame.minY > app.frame.height * 0.35 {
+            if frame.minY > screenBounds(app).height * 0.35 {
                 app.swipeUp()
             } else {
                 app.swipeDown()
@@ -219,11 +219,9 @@ final class FlowsUITests: XCTestCase {
     }
 
     private func screenBounds(_ app: XCUIApplication) -> CGRect {
-        let device = XCUIScreen.main.bounds
         let window = app.windows.firstMatch.frame
-        if device.height >= window.height, device.height >= 500 { return device }
         if window.height >= 500 { return window }
-        return device.height > window.height ? device : window
+        return app.frame
     }
 
     private func launch(_ screen: String) -> XCUIApplication {
