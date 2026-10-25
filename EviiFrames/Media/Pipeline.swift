@@ -114,6 +114,8 @@ final class VideoPipeline {
         progress.sceneCuts = analysis.cuts.count
         progress.duplicates = analysis.duplicates.count
         callbacks.log("Аналіз: \(analysis.signatures) кадрів, \(analysis.cuts.count) сцен, \(analysis.duplicates.count) дублікатів")
+        progress.detail = "Готуємо запис"
+        callbacks.progress(progress, nil)
 
         if job.interpolation.style == .stepwise {
             progress.phase = .paused
@@ -161,13 +163,24 @@ final class VideoPipeline {
         writer.writer.startSession(atSourceTime: .zero)
         if audioPlan == .passthrough {
             await passthroughAudio(job: job, limit: plan.outputDuration, writer: writer, callbacks: callbacks)
-        } else if audioPlan == .rebuild, !pcm.isEmpty {
-            await writePCM(pcm, job: job, plan: plan, request: request, writer: writer, callbacks: callbacks)
+        }
+        // Audio goes in alongside the video, never all up front. AVAssetWriter interleaves
+        // its inputs: once the audio is about a second ahead of the video it stops being
+        // ready, and writing the whole track first used to spin for ~30 s per chunk while
+        // the screen still showed the analysis step.
+        let feeder: PCMFeeder? = {
+            guard audioPlan == .rebuild, !pcm.isEmpty, let input = writer.audio else { return nil }
+            return PCMFeeder(pcm: pcm, job: job, plan: plan, request: request, input: input)
+        }()
+        if audioPlan == .rebuild, pcm.isEmpty {
+            callbacks.log("Звук не прочитано, експорт без звуку")
         }
 
         progress.phase = .interpolation
         progress.frameCount = plan.samples.count
+        progress.frameIndex = 0
         progress.fraction = 0
+        progress.detail = ""
         callbacks.progress(progress, nil)
 
         let source = FrameSource(
@@ -178,6 +191,7 @@ final class VideoPipeline {
             height: outputSize.height
         )
         try await source.start()
+        defer { source.stop() }
         var cache: [Int: CVPixelBuffer] = [:]
         var readIndex = 0
         var rateStart = Date()
@@ -206,7 +220,8 @@ final class VideoPipeline {
             } else {
                 rendered = try model.interpolate(frame0: left, frame1: right, timestep: sample.timestep)
             }
-            try await append(rendered, at: sample.presentationSeconds, writer: writer)
+            feeder?.feed(upTo: sample.presentationSeconds + 0.5)
+            try await append(rendered, at: sample.presentationSeconds, writer: writer, feeder: feeder)
             written += 1
             if request.loop {
                 cache = cache.filter { $0.key == 0 || $0.key >= sample.left }
@@ -232,6 +247,9 @@ final class VideoPipeline {
             callbacks.progress(progress, preview)
         }
 
+        if let failure = source.failure {
+            throw PipelineError.writer("Не вдалося прочитати кадри: \(failure)")
+        }
         if written == 0 {
             throw PipelineError.writer("Жоден кадр не записано")
         }
@@ -244,6 +262,9 @@ final class VideoPipeline {
         progress.detail = "Завершуємо файл"
         callbacks.progress(progress, nil)
         writer.video.markAsFinished()
+        if let feeder {
+            try await drain(feeder, writer: writer, callbacks: callbacks)
+        }
         writer.audio?.markAsFinished()
         await writer.writer.finishWriting()
         sealed = writer.writer.status == .completed
@@ -289,18 +310,42 @@ final class VideoPipeline {
             height: outputSize.height
         )
         try await source.start()
+        defer { source.stop() }
         var fast: [[Float]] = []
         var accurate: [[Float]] = []
+        // `expected` is only an estimate (duration × nominal fps). The loop ends when the
+        // reader runs out of frames, whether that is before or after the estimate.
         let expected = max(1, job.activeFrameCount)
+        var lastSent = Date.distantPast
         while let frame = source.next() {
             try check(callbacks)
             let plane = PixelBuffers.luma(frame, width: 96, height: 96)
             fast.append(LumaGrid.fromLuma(plane, width: 96, height: 96, grid: 8))
             accurate.append(LumaGrid.fromLuma(plane, width: 96, height: 96, grid: 24))
-            progress.fraction = min(0.99, Double(fast.count) / Double(expected))
+            let shownTotal = max(expected, fast.count + 1)
+            progress.fraction = min(0.99, Double(fast.count) / Double(shownTotal))
             progress.frameIndex = fast.count
-            progress.frameCount = expected
-            if fast.count % 5 == 0 { callbacks.progress(progress, nil) }
+            progress.frameCount = shownTotal
+            if fast.count == 1 {
+                // The first decoded frame doubles as the preview until RIFE renders one.
+                callbacks.progress(progress, cgImage(frame))
+                lastSent = Date()
+            } else if Date().timeIntervalSince(lastSent) >= 0.1 {
+                callbacks.progress(progress, nil)
+                lastSent = Date()
+            }
+        }
+        if let failure = source.failure {
+            throw PipelineError.writer("Не вдалося прочитати кадри (\(fast.count) з ≈\(expected)): \(failure)")
+        }
+        guard !fast.isEmpty else { throw PipelineError.noVideo }
+        // Finish the step on the real count, even when the estimate was off.
+        progress.fraction = 1
+        progress.frameIndex = fast.count
+        progress.frameCount = fast.count
+        callbacks.progress(progress, nil)
+        if fast.count != expected {
+            callbacks.log("Аналіз: декодовано \(fast.count) кадрів, оцінка була \(expected)")
         }
         let sensitivity = job.interpolation.sceneSensitivity
         let cuts = SceneDetector.cutIndices(signatures: accurate, sensitivity: sensitivity)
@@ -415,7 +460,7 @@ final class VideoPipeline {
         ]
     }
 
-    private func append(_ buffer: CVPixelBuffer, at seconds: Double, writer: WriterBox) async throws {
+    private func append(_ buffer: CVPixelBuffer, at seconds: Double, writer: WriterBox, feeder: PCMFeeder?) async throws {
         let width = CVPixelBufferGetWidth(buffer)
         let height = CVPixelBufferGetHeight(buffer)
         guard let owned = PixelBuffers.make(width: width, height: height) else {
@@ -425,6 +470,10 @@ final class VideoPipeline {
         let time = CMTime(seconds: max(0, seconds), preferredTimescale: 60_000)
         var spins = 0
         while !writer.video.isReadyForMoreMediaData {
+            // The writer may be holding video back until the audio catches up.
+            if let feeder, feeder.feed(upTo: .infinity) {
+                continue
+            }
             spins += 1
             if spins > 3000 || writer.writer.status == .failed {
                 throw PipelineError.writer(Self.writerDetail(writer.writer, fallback: "Кодер не встигає"))
@@ -603,67 +652,115 @@ final class VideoPipeline {
         return status == noErr ? copy : nil
     }
 
-    private func writePCM(
-        _ pcm: [Int16],
-        job: ClipJob,
-        plan: Plan,
-        request: PlanRequest,
-        writer: WriterBox,
-        callbacks: PipelineCallbacks
-    ) async {
-        guard let input = writer.audio else { return }
-        let rate = 44_100.0
-        let channels = 2
-        let map: SlowMoMap? = {
-            if case .slowMo(let factor, let fragment) = request.kind {
-                return SlowMoMap(clipDuration: request.sourceDuration, fragment: fragment, factor: Double(factor))
+    /// Writes the rest of the audio after the last video frame. Video is already marked
+    /// finished, so the writer no longer holds audio back. Stops with a log line, never hangs.
+    private func drain(_ feeder: PCMFeeder, writer: WriterBox, callbacks: PipelineCallbacks) async throws {
+        var idle = 0
+        while !feeder.isDone {
+            try check(callbacks)
+            if writer.writer.status == .failed {
+                throw PipelineError.writer(Self.writerDetail(writer.writer, fallback: "audio"))
             }
-            return nil
-        }()
-        let total = Int(plan.outputDuration * rate)
-        let chunk = 4096
-        var frame = 0
-        while frame < total {
-            let count = min(chunk, total - frame)
+            if feeder.feed(upTo: .infinity) {
+                idle = 0
+                continue
+            }
+            if feeder.isDone { break }
+            idle += 1
+            if idle > 1000 {
+                callbacks.log("Аудіо обрізано: кодер звуку не відповідав 10 с")
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        if feeder.appendFailed {
+            callbacks.log("Аудіо обрізано під час запису")
+        }
+    }
+
+    /// Rebuilt PCM for the output timeline, handed to the writer a chunk at a time.
+    final class PCMFeeder {
+        static let rate = 44_100.0
+        static let channels = 2
+        static let chunk = 4096
+        private let pcm: [Int16]
+        private let input: AVAssetWriterInput
+        private let map: SlowMoMap?
+        private let muteSlowed: Bool
+        private let cycle: Double
+        let total: Int
+        private(set) var frame = 0
+        private(set) var appendFailed = false
+
+        var isDone: Bool { frame >= total || appendFailed }
+
+        init(pcm: [Int16], job: ClipJob, plan: Plan, request: PlanRequest, input: AVAssetWriterInput) {
+            self.pcm = pcm
+            self.input = input
+            if case .slowMo(let factor, let fragment) = request.kind {
+                map = SlowMoMap(clipDuration: request.sourceDuration, fragment: fragment, factor: Double(factor))
+            } else {
+                map = nil
+            }
+            muteSlowed = job.slow.fragmentAudio == .mute
+            cycle = max(request.sourceDuration, 0.001)
+            total = max(0, Int(plan.outputDuration * Self.rate))
+        }
+
+        /// Appends chunks that start before `seconds` while the input takes them. Never waits.
+        /// Returns true when at least one chunk went in.
+        @discardableResult
+        func feed(upTo seconds: Double) -> Bool {
+            var appended = false
+            while !isDone, input.isReadyForMoreMediaData {
+                let startSeconds = Double(frame) / Self.rate
+                if startSeconds >= seconds { break }
+                let count = min(Self.chunk, total - frame)
+                let pts = CMTime(value: CMTimeValue(frame), timescale: CMTimeScale(Self.rate))
+                guard let buffer = VideoPipeline.pcmBuffer(
+                    samples(from: frame, count: count),
+                    frames: count,
+                    channels: Self.channels,
+                    rate: Self.rate,
+                    pts: pts
+                ) else {
+                    frame += count
+                    continue
+                }
+                if !input.append(buffer) {
+                    appendFailed = true
+                    break
+                }
+                frame += count
+                appended = true
+            }
+            return appended
+        }
+
+        private func samples(from start: Int, count: Int) -> [Int16] {
+            let channels = Self.channels
             var samples = [Int16](repeating: 0, count: count * channels)
             for i in 0..<count {
-                let outputTime = Double(frame + i) / rate
+                let outputTime = Double(start + i) / Self.rate
                 let sourceTime: Double
-                let muted: Bool
                 if let map {
                     sourceTime = map.sourceTime(at: outputTime)
-                    muted = job.slow.fragmentAudio == .mute && map.isSlowed(sourceTime: sourceTime)
+                    if muteSlowed && map.isSlowed(sourceTime: sourceTime) { continue }
                 } else {
-                    let cycle = max(request.sourceDuration, 0.001)
                     sourceTime = outputTime.truncatingRemainder(dividingBy: cycle)
-                    muted = false
                 }
-                if muted { continue }
-                let sourceFrame = Int((sourceTime * rate).rounded())
-                let base = sourceFrame * channels
+                let base = Int((sourceTime * Self.rate).rounded()) * channels
                 if base >= 0, base + channels <= pcm.count {
                     for c in 0..<channels {
                         samples[i * channels + c] = pcm[base + c]
                     }
                 }
             }
-            let pts = CMTime(value: CMTimeValue(frame), timescale: CMTimeScale(rate))
-            if let buffer = Self.pcmBuffer(samples, frames: count, channels: channels, rate: rate, pts: pts) {
-                var spins = 0
-                while !input.isReadyForMoreMediaData && spins < 3000 {
-                    try? await Task.sleep(nanoseconds: 10_000_000)
-                    spins += 1
-                }
-                if !input.append(buffer) {
-                    callbacks.log("Аудіо обрізано під час запису")
-                    break
-                }
-            }
-            frame += count
+            return samples
         }
     }
 
-    private static func pcmBuffer(_ samples: [Int16], frames: Int, channels: Int, rate: Double, pts: CMTime) -> CMSampleBuffer? {
+    fileprivate static func pcmBuffer(_ samples: [Int16], frames: Int, channels: Int, rate: Double, pts: CMTime) -> CMSampleBuffer? {
         var asbd = AudioStreamBasicDescription(
             mSampleRate: rate,
             mFormatID: kAudioFormatLinearPCM,

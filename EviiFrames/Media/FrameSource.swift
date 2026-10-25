@@ -17,6 +17,11 @@ final class FrameSource {
     private var lastFrame: CVPixelBuffer?
     private var exhausted = false
     private var padUntil = 0
+    /// Set when the reader stopped with an error instead of running out of frames.
+    private(set) var failure: String?
+    /// True once the reader has no more samples. The frame count is whatever was decoded,
+    /// not the duration × fps estimate.
+    var isExhausted: Bool { exhausted }
 
     init(url: URL, window: SourceWindow, fps: Double, width: Int, height: Int) {
         asset = AVURLAsset(url: url)
@@ -66,17 +71,32 @@ final class FrameSource {
         yielded = 0
     }
 
+    /// Releases the decoder early. Safe to call more than once.
+    func stop() {
+        if reader?.status == .reading {
+            reader?.cancelReading()
+        }
+    }
+
     func next() -> CVPixelBuffer? {
         guard yielded < ceiling else { return nil }
-        if !exhausted, let output, reader?.status != .failed {
-            while let sample = output.copyNextSampleBuffer() {
-                guard let image = CMSampleBufferGetImageBuffer(sample),
-                      let scaled = PixelBuffers.scale(image, width: targetWidth, height: targetHeight) else { continue }
-                lastFrame = scaled
-                yielded += 1
-                return scaled
+        if !exhausted {
+            if let output, let reader, reader.status == .reading {
+                while let sample = output.copyNextSampleBuffer() {
+                    guard let image = CMSampleBufferGetImageBuffer(sample),
+                          let scaled = PixelBuffers.scale(image, width: targetWidth, height: targetHeight) else { continue }
+                    lastFrame = scaled
+                    yielded += 1
+                    return scaled
+                }
             }
             exhausted = true
+            if reader?.status == .failed || reader == nil {
+                failure = reader?.error?.localizedDescription ?? "AVAssetReader не запущено"
+                // A failed read is not padded: the caller reports the error.
+                padUntil = yielded
+                return nil
+            }
             // A variable-rate file can hand back fewer samples than duration × fps.
             // Hold the last frame so the timeline still matches the nominal rate.
             // A constant-rate clip is already within a couple of frames, so it is not padded.

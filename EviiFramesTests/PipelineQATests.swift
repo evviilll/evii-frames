@@ -181,6 +181,94 @@ final class PipelineQATests: XCTestCase {
         )
     }
 
+    /// The phone case: a ~5 s clip with sound, slow-mo x4 → 30 fps. The rebuilt audio used to
+    /// be written in full before the first video frame. AVAssetWriter stops taking audio about
+    /// a second ahead of the video, so every chunk waited 30 s and the screen sat on «Аналіз».
+    func testFiveSecondSlowMoX4WithAudioDoesNotStall() async throws {
+        let url = try ClipFactory.write(ClipFactory.Spec(frames: 143, fps: 30, audio: true, name: "slow-143"))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let info = try await VideoProbe.probe(url)
+        XCTAssertTrue(info.hasAudio)
+        let job = makeJob(url: url, info: info) {
+            $0.mode = .slowMo
+            $0.slow.wholeClip = true
+            $0.slow.factor = 4
+            $0.export.keepAudio = true
+        }
+        let read = try await yielded(job)
+        let plan = Planner.plan(job.planRequest(frames: read))
+        XCTAssertGreaterThan(plan.outputDuration, 15)
+        let started = Date()
+        let run = try await export(job)
+        let elapsed = Date().timeIntervalSince(started)
+        print("EVII_QA slow143 elapsed=\(String(format: "%.1f", elapsed)) phases=\(run.phases)")
+        XCTAssertEqual(run.progress.phase, .finished)
+        XCTAssertEqual(run.phases, [.analysis, .interpolation, .encoding, .finished])
+        XCTAssertLessThan(elapsed, 900, "slow-mo x4 with audio took \(elapsed) s")
+        let analysis = try XCTUnwrap(run.lastAnalysis)
+        XCTAssertEqual(analysis.frameIndex, read)
+        XCTAssertEqual(analysis.frameCount, read)
+        XCTAssertEqual(analysis.fraction, 1, accuracy: 0.0001)
+        try await assertPlayable(
+            name: "slow-143-audio",
+            result: run.result,
+            pipeline: run.pipeline,
+            expectedFrames: plan.samples.count,
+            expectedFPS: plan.outputFPS,
+            audio: true,
+            windowStart: 0
+        )
+    }
+
+    /// The estimate (window × fps) says more frames than the reader has. Analysis has to end
+    /// when the reader runs dry, close the step on the real count, and the export must finish.
+    func testAnalysisFinishesWhenFewerFramesDecodeThanEstimated() async throws {
+        let url = try ClipFactory.write(ClipFactory.Spec(frames: 24, fps: 30, audio: true, name: "short-read"))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let info = try await VideoProbe.probe(url)
+        var job = makeJob(url: url, info: info) {
+            $0.mode = .slowMo
+            $0.slow.wholeClip = true
+            $0.slow.factor = 4
+            $0.export.keepAudio = true
+        }
+        // Two frames past the end: too few to be padded as a variable-rate tail.
+        job.window = SourceWindow(start: 0, end: info.duration + 2.0 / info.fps)
+        let read = try await yielded(job)
+        XCTAssertGreaterThan(read, 20)
+        XCTAssertLessThan(read, job.activeFrameCount, "estimate \(job.activeFrameCount), decoded \(read)")
+        let plan = Planner.plan(job.planRequest(frames: read))
+        let run = try await export(job)
+        XCTAssertEqual(run.progress.phase, .finished)
+        let analysis = try XCTUnwrap(run.lastAnalysis)
+        XCTAssertEqual(analysis.frameIndex, read)
+        XCTAssertEqual(analysis.frameCount, read)
+        XCTAssertEqual(analysis.fraction, 1, accuracy: 0.0001)
+        XCTAssertEqual(run.progress.sourceFrames, read)
+        let result = try XCTUnwrap(run.result)
+        XCTAssertEqual(result.frameCount, plan.samples.count)
+        let facts = try await MediaInspect.inspect(result.url)
+        XCTAssertTrue(facts.playable)
+        XCTAssertEqual(facts.videoFrames, plan.samples.count)
+        XCTAssertTrue(facts.hasAudio)
+    }
+
+    /// A file the reader cannot finish must end in an error, not an endless analysis step.
+    func testUnreadableClipFailsInsteadOfSpinning() async throws {
+        let url = try ClipFactory.write(ClipFactory.Spec(frames: 30, fps: 30, name: "broken"))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let info = try await VideoProbe.probe(url)
+        let data = try Data(contentsOf: url)
+        try data.prefix(data.count / 3).write(to: url)
+        let job = makeJob(url: url, info: info) { _ in }
+        do {
+            let run = try await export(job)
+            XCTFail("a truncated clip exported \(String(describing: run.result))")
+        } catch {
+            XCTAssertFalse(error.localizedDescription.isEmpty)
+        }
+    }
+
     func testResolutionLimitAndTinyFrame() async throws {
         let url = try ClipFactory.write(ClipFactory.Spec(frames: 8, fps: 30, width: 160, height: 96, name: "cap"))
         defer { try? FileManager.default.removeItem(at: url) }
@@ -319,6 +407,8 @@ final class PipelineQATests: XCTestCase {
         var logs: [String]
         var cancelled: Bool
         var peakFootprint: UInt64
+        var phases: [PipelineProgress.Phase]
+        var lastAnalysis: PipelineProgress?
     }
 
     private func expectInterpolation(
@@ -415,6 +505,8 @@ final class PipelineQATests: XCTestCase {
         let callbacks = PipelineCallbacks(
             progress: { progress, _ in
                 box.progress = progress
+                if box.phases.last != progress.phase { box.phases.append(progress.phase) }
+                if progress.phase == .analysis { box.lastAnalysis = progress }
                 box.peakFootprint = max(box.peakFootprint, ResidentMemory.footprint())
                 if let cancelAfterInterpolated, progress.phase == .interpolation, progress.frameIndex >= cancelAfterInterpolated {
                     flag.cancel()
@@ -427,9 +519,9 @@ final class PipelineQATests: XCTestCase {
         do {
             let result = try await pipeline.run(job: job, queueIndex: 1, queueCount: 1, callbacks: callbacks)
             box.peakFootprint = max(box.peakFootprint, ResidentMemory.footprint())
-            return ExportRun(result: result, pipeline: pipeline, progress: box.progress, logs: box.logs, cancelled: false, peakFootprint: box.peakFootprint)
+            return ExportRun(result: result, pipeline: pipeline, progress: box.progress, logs: box.logs, cancelled: false, peakFootprint: box.peakFootprint, phases: box.phases, lastAnalysis: box.lastAnalysis)
         } catch PipelineError.cancelled {
-            return ExportRun(result: nil, pipeline: pipeline, progress: box.progress, logs: box.logs, cancelled: true, peakFootprint: box.peakFootprint)
+            return ExportRun(result: nil, pipeline: pipeline, progress: box.progress, logs: box.logs, cancelled: true, peakFootprint: box.peakFootprint, phases: box.phases, lastAnalysis: box.lastAnalysis)
         }
     }
 
@@ -472,6 +564,8 @@ final class PipelineQATests: XCTestCase {
         var progress = PipelineProgress()
         var logs: [String] = []
         var peakFootprint: UInt64 = 0
+        var phases: [PipelineProgress.Phase] = []
+        var lastAnalysis: PipelineProgress?
     }
 }
 

@@ -109,8 +109,13 @@ enum ClipFactory {
         }
         let looks = appearances(spec)
         var cursor = 0.0
+        // Audio is interleaved with the video like a camera file. Writing all video first
+        // stalls once AVAssetWriter wants audio to catch up (about a second in).
+        let length = (0..<spec.frames).reduce(0.0) { $0 + gap(spec, index: $1) }
+        let tone = audio.map { ToneFeeder(input: $0, duration: length) }
         for index in 0..<spec.frames {
-            try waitReady(video, writer: writer)
+            _ = try tone?.feed(upTo: cursor + 0.3, writer: writer)
+            try waitReady(video, writer: writer, feeding: tone)
             guard let buffer = take(pool) else {
                 throw ClipFactoryError.message("CVPixelBuffer")
             }
@@ -126,8 +131,11 @@ enum ClipFactory {
             }
         }
         video.markAsFinished()
-        if let audio {
-            try writeTone(audio, duration: cursor, writer: writer)
+        if let audio, let tone {
+            while !tone.isDone {
+                try waitReady(audio, writer: writer)
+                _ = try tone.feed(upTo: .infinity, writer: writer)
+            }
             audio.markAsFinished()
         }
         writer.endSession(atSourceTime: CMTime(seconds: max(cursor, 0.01), preferredTimescale: 60_000))
@@ -250,11 +258,14 @@ enum ClipFactory {
         }
     }
 
-    private static func waitReady(_ input: AVAssetWriterInput, writer: AVAssetWriter) throws {
+    private static func waitReady(_ input: AVAssetWriterInput, writer: AVAssetWriter, feeding tone: ToneFeeder? = nil) throws {
         // RunLoop.run(until:) returns immediately when the loop is idle, so a
         // spin count expires while the writer is still .writing (status 1).
         let deadline = Date().addingTimeInterval(30)
         while !input.isReadyForMoreMediaData {
+            if let tone, try tone.feed(upTo: .infinity, writer: writer) {
+                continue
+            }
             if writer.status == .failed || writer.status == .cancelled {
                 throw ClipFactoryError.message(writerDetail(writer, fallback: "кодер зупинився"))
             }
@@ -314,7 +325,7 @@ enum ClipFactory {
         }
     }
 
-    private static func pcm(_ samples: [Int16], frames: Int, channels: Int, rate: Int, pts: CMTime) -> CMSampleBuffer? {
+    fileprivate static func pcm(_ samples: [Int16], frames: Int, channels: Int, rate: Int, pts: CMTime) -> CMSampleBuffer? {
         var asbd = AudioStreamBasicDescription(
             mSampleRate: Float64(rate),
             mFormatID: kAudioFormatLinearPCM,
@@ -373,5 +384,46 @@ enum ClipFactory {
             )
             return status == noErr ? sample : nil
         }
+    }
+}
+
+/// A 440 Hz tone handed to the writer a chunk at a time, only while the input takes it.
+private final class ToneFeeder {
+    private let input: AVAssetWriterInput
+    private let total: Int
+    private var frame = 0
+    private let rate = 44_100
+    private let channels = 2
+    private let chunk = 2048
+
+    init(input: AVAssetWriterInput, duration: Double) {
+        self.input = input
+        total = max(1, Int(duration * 44_100))
+    }
+
+    var isDone: Bool { frame >= total }
+
+    func feed(upTo seconds: Double, writer: AVAssetWriter) throws -> Bool {
+        var appended = false
+        while !isDone, input.isReadyForMoreMediaData, Double(frame) / Double(rate) < seconds {
+            let count = min(chunk, total - frame)
+            var samples = [Int16](repeating: 0, count: count * channels)
+            for i in 0..<count {
+                let t = Double(frame + i) / Double(rate)
+                let value = Int16(sin(t * 2 * Double.pi * 440) * 6000)
+                samples[i * channels] = value
+                samples[i * channels + 1] = value
+            }
+            let pts = CMTime(value: CMTimeValue(frame), timescale: CMTimeScale(rate))
+            guard let buffer = ClipFactory.pcm(samples, frames: count, channels: channels, rate: rate, pts: pts) else {
+                throw ClipFactoryError.message("PCM")
+            }
+            if !input.append(buffer) {
+                throw ClipFactoryError.message(writer.error?.localizedDescription ?? "audio append")
+            }
+            frame += count
+            appended = true
+        }
+        return appended
     }
 }

@@ -142,15 +142,23 @@ enum VideoProbe {
         return dynamicRange(fourcc: fourcc(subtype), transfer: transfer, atomKeys: atoms)
     }
 
-    static func posterJPEG(_ url: URL) async -> Data? {
+    /// A JPEG poster for the clip. AVAssetImageGenerator decodes on its own queue; callers
+    /// run this from a detached task so the main thread never waits on it.
+    static func posterJPEG(_ url: URL, at seconds: Double = 0.1) async -> Data? {
         let asset = AVURLAsset(url: url)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: 480, height: 480)
-        let time = CMTime(seconds: 0.1, preferredTimescale: 600)
-        guard let cg = try? await generator.image(at: time).image else { return nil }
-        let ui = UIImage(cgImage: cg)
-        return ui.jpegData(compressionQuality: 0.8)
+        generator.maximumSize = CGSize(width: 720, height: 720)
+        generator.requestedTimeToleranceBefore = CMTime(seconds: 0.5, preferredTimescale: 600)
+        generator.requestedTimeToleranceAfter = CMTime(seconds: 0.5, preferredTimescale: 600)
+        var times = [CMTime(seconds: max(0, seconds) + 0.05, preferredTimescale: 600), .zero]
+        if seconds > 0.2 { times.insert(CMTime(seconds: seconds, preferredTimescale: 600), at: 1) }
+        for time in times {
+            if let cg = try? await generator.image(at: time).image {
+                return UIImage(cgImage: cg).jpegData(compressionQuality: 0.85)
+            }
+        }
+        return nil
     }
 
     private static func fourcc(_ subtype: FourCharCode) -> String {

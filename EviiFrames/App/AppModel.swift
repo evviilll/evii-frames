@@ -121,6 +121,7 @@ final class AppModel: ObservableObject {
         activeJobID = id
         progress = PipelineProgress()
         previewImage = nil
+        loadPreview(for: id)
         cover = .processing
         task?.cancel()
         cancelFlag = CancelFlag()
@@ -128,6 +129,25 @@ final class AppModel: ObservableObject {
         let pause = gate
         task = Task {
             await self.run(order, flag: flag, pause: pause)
+        }
+    }
+
+    /// Shows the clip's own frame at the top of the processing screen right away,
+    /// instead of the placeholder, until the pipeline sends a decoded or rendered frame.
+    private func loadPreview(for id: UUID) {
+        guard let job = job(id) else { return }
+        if let data = job.thumbnailJPEG, let image = UIImage(data: data) {
+            previewImage = image
+            return
+        }
+        let url = job.sourceURL
+        let at = job.window.start
+        Task { [weak self] in
+            // posterJPEG is nonisolated async, so the decode runs off the main actor.
+            guard let data = await VideoProbe.posterJPEG(url, at: at) else { return }
+            guard let self, self.activeJobID == id, self.previewImage == nil else { return }
+            self.previewImage = UIImage(data: data)
+            self.mutate(id) { if $0.thumbnailJPEG == nil { $0.thumbnailJPEG = data } }
         }
     }
 
@@ -182,15 +202,20 @@ final class AppModel: ObservableObject {
 
     private func run(_ ids: [UUID], flag: CancelFlag, pause: PauseGate) async {
         var lastDone: UUID?
+        var failure: String?
         for (index, id) in ids.enumerated() {
             if flag.isCancelled { break }
             guard let snapshot = job(id) else { continue }
             mutate(id) { $0.status = .running }
             activeJobID = id
+            // Each update hops to the main actor in its own Task, and those can land out of
+            // order. Drop a stale one so a late analysis update never overwrites a later phase.
+            let order = ProgressOrder()
             let callbacks = PipelineCallbacks(
                 progress: { [weak self] progress, image in
+                    let ticket = order.issue()
                     Task { @MainActor in
-                        guard let self else { return }
+                        guard let self, order.accept(ticket) else { return }
                         var copy = progress
                         copy.queueIndex = index + 1
                         copy.queueCount = ids.count
@@ -225,15 +250,21 @@ final class AppModel: ObservableObject {
                 break
             } catch {
                 mutate(id) { $0.status = .failed(error.localizedDescription) }
-                alert = error.localizedDescription
+                failure = error.localizedDescription
                 log(error.localizedDescription)
                 break
             }
         }
-        if let lastDone, job(lastDone)?.status == .done {
+        if failure == nil, let lastDone, job(lastDone)?.status == .done {
             cover = .done(lastDone)
-        } else if cover == .processing {
+        } else if cover != nil {
             cover = nil
+        }
+        if let failure {
+            // An alert raised while the full-screen cover is still sliding away is dropped
+            // by SwiftUI. Wait for the dismissal so the error is actually on screen.
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            alert = "Обробка зупинилась. \(failure)"
         }
     }
 
@@ -352,4 +383,26 @@ final class AppModel: ObservableObject {
         formatter.dateFormat = "HH:mm:ss"
         return formatter
     }()
+}
+
+/// Hands out increasing tickets on the pipeline side and keeps the newest one applied.
+final class ProgressOrder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var issued = 0
+    private var applied = 0
+
+    func issue() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        issued += 1
+        return issued
+    }
+
+    func accept(_ ticket: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard ticket > applied else { return false }
+        applied = ticket
+        return true
+    }
 }

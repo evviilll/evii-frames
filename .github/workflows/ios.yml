@@ -195,6 +195,12 @@ jobs:
           (cd build && zip -qry EviiFrames-0.1.1-unsigned.ipa Payload)
           ls -lh build/EviiFrames-0.1.1-unsigned.ipa
           unzip -l build/EviiFrames-0.1.1-unsigned.ipa | head
+          # The phone letterboxes the app without UILaunchScreen. Check the shipped plist.
+          unzip -p build/EviiFrames-0.1.1-unsigned.ipa Payload/EviiFrames.app/Info.plist > build/Info.plist
+          plutil -p build/Info.plist
+          plutil -extract UILaunchScreen xml1 -o - build/Info.plist
+          plutil -extract UISupportedInterfaceOrientations xml1 -o - build/Info.plist
+          plutil -extract NSPhotoLibraryAddUsageDescription raw -o - build/Info.plist
 
       - name: Simulator app for Appetize
         if: always()
@@ -262,6 +268,7 @@ jobs:
             build/uitest.log
             build/unit-status.txt
             build/ui-status.txt
+            build/Info.plist
 
       - name: Require passing tests and the IPA
         if: always()
