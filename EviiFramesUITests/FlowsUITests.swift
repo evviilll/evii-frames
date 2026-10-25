@@ -184,38 +184,55 @@ final class FlowsUITests: XCTestCase {
         button.tap()
     }
 
-    /// Scrolls until the control's center is above the tab bar. `isHittable` is
+    /// Scrolls until the control's center is inside the window. `isHittable` is
     /// true when only a sliver is visible, and that tap never reaches the button.
     private func bringOnScreen(_ app: XCUIApplication, _ element: XCUIElement, bottomClearance: CGFloat, name: String = "") {
         let label = name.isEmpty ? (element.identifier.isEmpty ? element.label : element.identifier) : name
         XCTAssertTrue(element.waitForExistence(timeout: 6), label)
-        var previous = CGRect.null
         for _ in 0..<8 {
             if isClear(app, element, bottomClearance: bottomClearance) { return }
-            let frame = element.frame
-            if frame.minY > screenBounds(app).height * 0.35 {
-                app.swipeUp()
-            } else {
-                app.swipeDown()
-            }
-            if frame.equalTo(previous) { break }
-            previous = frame
+            let before = element.frame
+            let screen = screenBounds(app)
+            nudge(app, up: before.midY > screen.midY)
+            let after = element.frame
+            if after.equalTo(before) { break }
         }
+        let screen = screenBounds(app)
         XCTAssertTrue(
             isClear(app, element, bottomClearance: bottomClearance),
-            "\(label) frame \(element.frame) screen \(screenBounds(app)) app \(app.frame)"
+            "\(label) hittable=\(element.isHittable) frame \(element.frame) screen \(screen) app \(app.frame)"
         )
     }
 
     private func isClear(_ app: XCUIApplication, _ element: XCUIElement, bottomClearance: CGFloat) -> Bool {
         let frame = element.frame
-        guard element.exists, element.isHittable, frame.width > 2, frame.height > 2, frame.minY >= 0 else { return false }
+        guard element.exists, element.isHittable, frame.width > 2, frame.height > 2 else { return false }
         let screen = screenBounds(app)
-        // XCUIApplication.frame stays 320×480 even when the window is a full iPhone.
-        // A measurement that short cannot tell the tab bar from the real bottom edge.
-        let clearance: CGFloat = screen.height >= 500 ? bottomClearance : 0
-        let height = max(screen.height, frame.maxY)
-        return frame.midY <= height - clearance
+        // XCUIApplication.frame stays 320×480. That stub cannot tell the tab bar
+        // from the real bottom edge, so a hittable control is enough.
+        guard screen.height >= 500 else { return frame.minY >= 0 }
+        // The SE window is inset (origin y ≈ 52, height ≈ 562, so it ends near
+        // y = 615 on a 667-pt phone). That bottom edge is already the tab bar.
+        // Treating `height` as the bottom coordinate, then subtracting another
+        // 56 pt, marked the x8 pill (y ≈ 545, fully inside the window) as off-screen.
+        let inset: CGFloat = screen.minY >= 20 ? 8 : bottomClearance
+        return frame.minY >= screen.minY - 1 && frame.midY <= screen.maxY - inset
+    }
+
+    /// `app.swipeUp()` drags inside `XCUIApplication.frame`, which stays 320×480
+    /// and never moves the scroll view. Drag the real scroll view or window.
+    private func nudge(_ app: XCUIApplication, up: Bool) {
+        let scroll = app.scrollViews.firstMatch
+        let host: XCUIElement
+        if scroll.exists, scroll.frame.height > 200 {
+            host = scroll
+        } else {
+            let window = app.windows.firstMatch
+            host = window.frame.height >= 500 ? window : app
+        }
+        let start = host.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: up ? 0.78 : 0.32))
+        let end = host.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: up ? 0.32 : 0.78))
+        start.press(forDuration: 0.05, thenDragTo: end)
     }
 
     private func screenBounds(_ app: XCUIApplication) -> CGRect {
