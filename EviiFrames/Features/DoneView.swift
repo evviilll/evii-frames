@@ -36,7 +36,7 @@ struct DoneView: View {
 
     private func content(_ job: ClipJob, _ result: JobResult) -> some View {
         let shown = reveal
-        VStack(alignment: .leading, spacing: 16) {
+        return VStack(alignment: .leading, spacing: 16) {
             ZStack {
                 Text("Готово")
                     .font(.system(size: 17, weight: .semibold))
