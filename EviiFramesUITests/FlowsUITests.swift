@@ -203,17 +203,27 @@ final class FlowsUITests: XCTestCase {
         }
         XCTAssertTrue(
             isClear(app, element, bottomClearance: bottomClearance),
-            "\(label) frame \(element.frame) screen \(app.frame)"
+            "\(label) frame \(element.frame) screen \(screenBounds(app)) app \(app.frame)"
         )
     }
 
     private func isClear(_ app: XCUIApplication, _ element: XCUIElement, bottomClearance: CGFloat) -> Bool {
         let frame = element.frame
-        return element.exists
-            && element.isHittable
-            && frame.width > 2
-            && frame.minY >= 0
-            && frame.midY <= app.frame.height - bottomClearance
+        guard element.exists, element.isHittable, frame.width > 2, frame.height > 2, frame.minY >= 0 else { return false }
+        let screen = screenBounds(app)
+        // XCUIApplication.frame stays 320×480 even when the window is a full iPhone.
+        // A measurement that short cannot tell the tab bar from the real bottom edge.
+        let clearance: CGFloat = screen.height >= 500 ? bottomClearance : 0
+        let height = max(screen.height, frame.maxY)
+        return frame.midY <= height - clearance
+    }
+
+    private func screenBounds(_ app: XCUIApplication) -> CGRect {
+        let device = XCUIScreen.main.bounds
+        let window = app.windows.firstMatch.frame
+        if device.height >= window.height, device.height >= 500 { return device }
+        if window.height >= 500 { return window }
+        return device.height > window.height ? device : window
     }
 
     private func launch(_ screen: String) -> XCUIApplication {

@@ -14,6 +14,9 @@ final class FrameSource {
     private var output: AVAssetReaderOutput?
     private(set) var yielded = 0
     private let ceiling: Int
+    private var lastFrame: CVPixelBuffer?
+    private var exhausted = false
+    private var padUntil = 0
 
     init(url: URL, window: SourceWindow, fps: Double, width: Int, height: Int) {
         asset = AVURLAsset(url: url)
@@ -64,11 +67,29 @@ final class FrameSource {
     }
 
     func next() -> CVPixelBuffer? {
-        guard yielded < ceiling, let output, let reader, reader.status == .reading else { return nil }
-        guard let sample = output.copyNextSampleBuffer(),
-              let image = CMSampleBufferGetImageBuffer(sample) else { return nil }
-        yielded += 1
-        return PixelBuffers.scale(image, width: targetWidth, height: targetHeight)
+        guard yielded < ceiling else { return nil }
+        if !exhausted, let output, reader?.status != .failed {
+            while let sample = output.copyNextSampleBuffer() {
+                guard let image = CMSampleBufferGetImageBuffer(sample),
+                      let scaled = PixelBuffers.scale(image, width: targetWidth, height: targetHeight) else { continue }
+                lastFrame = scaled
+                yielded += 1
+                return scaled
+            }
+            exhausted = true
+            // A variable-rate file can hand back fewer samples than duration × fps.
+            // Hold the last frame so the timeline still matches the nominal rate.
+            // A constant-rate clip is already within a couple of frames, so it is not padded.
+            let nominal = Int((window.duration * self.fps).rounded())
+            padUntil = yielded + 3 <= nominal ? nominal : yielded
+        }
+        if let lastFrame, yielded < padUntil {
+            yielded += 1
+            guard let copy = PixelBuffers.make(width: targetWidth, height: targetHeight) else { return nil }
+            PixelBuffers.copy(lastFrame, into: copy)
+            return copy
+        }
+        return nil
     }
 
     private static func upright(natural: CGSize, transform: CGAffineTransform) -> (size: CGSize, transform: CGAffineTransform) {

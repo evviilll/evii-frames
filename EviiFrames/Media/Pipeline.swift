@@ -143,15 +143,14 @@ final class VideoPipeline {
         job.export.codec = resolved.codec
 
         let outputURL = try outputURL(for: job, fps: plan.outputFPS)
-        let audioPlan: AudioPlan = {
-            guard job.export.keepAudio, job.info.hasAudio else { return .none }
-            if job.mode == .slowMo || job.export.minimumDuration != nil { return .rebuild }
-            return .passthrough
-        }()
+        // Compressed passthrough leaves the writer failed: AAC priming has a
+        // negative decode timestamp, and the reader reuses the sample memory.
+        // Rebuilding PCM keeps the same speed and starts a trimmed clip at zero.
+        let audioPlan: AudioPlan = job.export.keepAudio && job.info.hasAudio ? .rebuild : .none
         let pcm = audioPlan == .rebuild ? await decodePCM(job: job, callbacks: callbacks) : []
         let writer = try makeWriter(job: job, url: outputURL, size: outputSize, fps: plan.outputFPS, audio: audioPlan)
         guard writer.writer.startWriting() else {
-            let reason = writer.writer.error?.localizedDescription ?? "AVAssetWriter"
+            let reason = Self.writerDetail(writer.writer, fallback: "AVAssetWriter")
             writer.writer.cancelWriting()
             throw PipelineError.writer(reason)
         }
@@ -249,7 +248,7 @@ final class VideoPipeline {
         await writer.writer.finishWriting()
         sealed = writer.writer.status == .completed
         if !sealed {
-            throw PipelineError.writer(writer.writer.error?.localizedDescription ?? "finishWriting")
+            throw PipelineError.writer(Self.writerDetail(writer.writer, fallback: "finishWriting"))
         }
         let bytes = (try? FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? NSNumber)?.int64Value ?? 0
         progress.phase = .finished
@@ -428,12 +427,12 @@ final class VideoPipeline {
         while !writer.video.isReadyForMoreMediaData {
             spins += 1
             if spins > 3000 || writer.writer.status == .failed {
-                throw PipelineError.writer(writer.writer.error?.localizedDescription ?? "Кодер не встигає")
+                throw PipelineError.writer(Self.writerDetail(writer.writer, fallback: "Кодер не встигає"))
             }
             try await Task.sleep(nanoseconds: 10_000_000)
         }
         if !writer.adaptor.append(owned, withPresentationTime: time) {
-            throw PipelineError.writer(writer.writer.error?.localizedDescription ?? "append")
+            throw PipelineError.writer(Self.writerDetail(writer.writer, fallback: "append"))
         }
     }
 
@@ -469,6 +468,12 @@ final class VideoPipeline {
             items.append(item)
         }
         return items
+    }
+
+    private static func writerDetail(_ writer: AVAssetWriter, fallback: String) -> String {
+        let status = writer.status.rawValue
+        guard let error = writer.error as NSError? else { return "\(fallback) status=\(status)" }
+        return "\(error.localizedDescription) [\(error.domain) \(error.code)] status=\(status)"
     }
 
     private func cgImage(_ buffer: CVPixelBuffer) -> CGImage? {
@@ -541,6 +546,7 @@ final class VideoPipeline {
                 duration: CMTime(seconds: max(0.01, job.window.duration), preferredTimescale: 60_000)
             )
             let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+            output.alwaysCopiesSampleData = true
             guard reader.canAdd(output) else { return }
             reader.add(output)
             guard reader.startReading() else { return }
@@ -580,7 +586,10 @@ final class VideoPipeline {
                 entries[index].presentationTimeStamp = CMTimeSubtract(entries[index].presentationTimeStamp, origin)
             }
             if entries[index].decodeTimeStamp.isNumeric {
-                entries[index].decodeTimeStamp = CMTimeSubtract(entries[index].decodeTimeStamp, origin)
+                let shifted = CMTimeSubtract(entries[index].decodeTimeStamp, origin)
+                // AAC priming sits before the first presentation time. A negative
+                // decode timestamp makes AVAssetWriter fail the whole file.
+                entries[index].decodeTimeStamp = shifted.seconds < 0 ? .invalid : shifted
             }
         }
         var copy: CMSampleBuffer?
