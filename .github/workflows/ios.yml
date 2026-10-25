@@ -99,9 +99,12 @@ jobs:
           cat /tmp/sim.env >> "$GITHUB_ENV"
 
       - name: Unit tests and simulator benchmark
+        id: unit
+        continue-on-error: true
         run: |
           set +e
           set -o pipefail
+          mkdir -p build/benchmark
           xcodebuild test \
             -project EviiFrames.xcodeproj \
             -scheme EviiFrames \
@@ -115,13 +118,16 @@ jobs:
             ENABLE_DEBUG_DYLIB=NO \
             | tee build/test.log
           status=$?
-          mkdir -p build/benchmark
+          echo "${status}" > build/unit-status.txt
           grep EVII_BENCH build/test.log > build/benchmark/benchmark-simulator.txt || true
           grep EVII_QA build/test.log > build/benchmark/qa.txt || true
+          echo "unit_exit=${status}"
           exit "${status}"
 
       - name: UI tests with simulator video
+        id: ui
         if: always()
+        continue-on-error: true
         run: |
           set +e
           mkdir -p build/videos build/benchmark
@@ -143,6 +149,7 @@ jobs:
             ENABLE_DEBUG_DYLIB=NO \
             | tee build/uitest.log
           status=$?
+          echo "${status}" > build/ui-status.txt
           if [ -f /tmp/evii-ui-record.pid ]; then
             kill -INT "$(cat /tmp/evii-ui-record.pid)" 2>/dev/null || true
             for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
@@ -152,6 +159,7 @@ jobs:
             wait "$(cat /tmp/evii-ui-record.pid)" 2>/dev/null || true
           fi
           ls -lh build/videos || true
+          echo "ui_exit=${status}"
           exit "${status}"
 
       - name: Simulator screenshots
@@ -163,6 +171,7 @@ jobs:
           ci/screenshots.sh "${APP}" build/screenshots
 
       - name: Unsigned IPA
+        if: always()
         run: |
           set -euo pipefail
           xcodebuild archive \
@@ -184,6 +193,7 @@ jobs:
           cp -R "${APP}" build/Payload/EviiFrames.app
           rm -f build/EviiFrames-0.1.1-unsigned.ipa
           (cd build && zip -qry EviiFrames-0.1.1-unsigned.ipa Payload)
+          ls -lh build/EviiFrames-0.1.1-unsigned.ipa
           unzip -l build/EviiFrames-0.1.1-unsigned.ipa | head
 
       - name: Simulator app for Appetize
@@ -250,6 +260,19 @@ jobs:
             build/benchmark
             build/test.log
             build/uitest.log
+            build/unit-status.txt
+            build/ui-status.txt
+
+      - name: Require passing tests and the IPA
+        if: always()
+        run: |
+          set -euo pipefail
+          unit="$(cat build/unit-status.txt 2>/dev/null || echo missing)"
+          ui="$(cat build/ui-status.txt 2>/dev/null || echo missing)"
+          echo "unit_exit=${unit} ui_exit=${ui} unit_outcome=${{ steps.unit.outcome }} ui_outcome=${{ steps.ui.outcome }}"
+          test -f build/EviiFrames-0.1.1-unsigned.ipa
+          test "${unit}" = "0"
+          test "${ui}" = "0"
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')

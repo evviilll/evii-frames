@@ -48,12 +48,12 @@ final class FlowsUITests: XCTestCase {
         tap(app, "x4")
         app.buttons["theme-toggle"].tap()
         let exportRow = app.buttons["nav-Експорт"]
-        XCTAssertTrue(exportRow.waitForExistence(timeout: 5))
-        for _ in 0..<5 where !exportRow.isHittable {
-            app.swipeUp()
-        }
+        // The row sits over the tab bar on a short phone. A tap there hits the bar
+        // and never pushes Export, so «КОДЕК» never appears.
+        bringOnScreen(app, exportRow, bottomClearance: 56)
         exportRow.tap()
-        XCTAssertTrue(app.buttons["H.264"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["H.264"].waitForExistence(timeout: 8), "Експорт не відкрився")
+        XCTAssertTrue(app.staticTexts["КОДЕК"].waitForExistence(timeout: 4), "Секція КОДЕК не читається")
         tap(app, "H.264")
         tap(app, "HEVC")
         tap(app, "ProRes")
@@ -156,8 +156,11 @@ final class FlowsUITests: XCTestCase {
         done.buttons["Після"].tap()
         done.buttons["0.25x"].tap()
         done.buttons["Поруч"].tap()
-        XCTAssertTrue(done.buttons["primary-button"].exists)
-        done.buttons["edit-again"].tap()
+        let save = done.buttons["primary-button"]
+        let edit = done.buttons["edit-again"]
+        bringOnScreen(done, edit, bottomClearance: 12)
+        XCTAssertTrue(save.isHittable, "Зберегти у Фото лишилась за екраном \(save.frame)")
+        edit.tap()
         XCTAssertTrue(done.staticTexts["Інтерполяція"].waitForExistence(timeout: 5))
     }
 
@@ -173,8 +176,44 @@ final class FlowsUITests: XCTestCase {
 
     private func tap(_ app: XCUIApplication, _ title: String) {
         let button = app.buttons.matching(NSPredicate(format: "identifier == %@ OR label == %@ OR label BEGINSWITH %@", title, title, title)).firstMatch
-        XCTAssertTrue(button.waitForExistence(timeout: 5), title)
+        if app.alerts.firstMatch.exists || app.sheets.firstMatch.exists {
+            XCTAssertTrue(button.waitForExistence(timeout: 5), title)
+        } else {
+            bringOnScreen(app, button, bottomClearance: 56, name: title)
+        }
         button.tap()
+    }
+
+    /// Scrolls until the control's center is above the tab bar. `isHittable` is
+    /// true when only a sliver is visible, and that tap never reaches the button.
+    private func bringOnScreen(_ app: XCUIApplication, _ element: XCUIElement, bottomClearance: CGFloat, name: String = "") {
+        let label = name.isEmpty ? (element.identifier.isEmpty ? element.label : element.identifier) : name
+        XCTAssertTrue(element.waitForExistence(timeout: 6), label)
+        var previous = CGRect.null
+        for _ in 0..<8 {
+            if isClear(app, element, bottomClearance: bottomClearance) { return }
+            let frame = element.frame
+            if frame.minY > app.frame.height * 0.35 {
+                app.swipeUp()
+            } else {
+                app.swipeDown()
+            }
+            if frame.equalTo(previous) { break }
+            previous = frame
+        }
+        XCTAssertTrue(
+            isClear(app, element, bottomClearance: bottomClearance),
+            "\(label) frame \(element.frame) screen \(app.frame)"
+        )
+    }
+
+    private func isClear(_ app: XCUIApplication, _ element: XCUIElement, bottomClearance: CGFloat) -> Bool {
+        let frame = element.frame
+        return element.exists
+            && element.isHittable
+            && frame.width > 2
+            && frame.minY >= 0
+            && frame.midY <= app.frame.height - bottomClearance
     }
 
     private func launch(_ screen: String) -> XCUIApplication {

@@ -36,9 +36,12 @@ struct DoneView: View {
 
     private func content(_ job: ClipJob, _ result: JobResult) -> some View {
         let shown = reveal
+        // Bound the scroll port to the screen. A ScrollView that sizes to its
+        // content is clipped, and on a 667-pt phone «Змінити» stays below the glass.
         return ScrollView {
             doneStack(job, result, shown: shown)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(theme.bg.ignoresSafeArea())
     }
 
@@ -123,10 +126,9 @@ struct DoneView: View {
                 .accessibilityIdentifier("edit-again")
             }
             .foregroundStyle(theme.text)
-
-            Spacer(minLength: 0)
         }
         .padding(16)
+        .padding(.bottom, 8)
     }
 
     private var reveal: CGFloat {

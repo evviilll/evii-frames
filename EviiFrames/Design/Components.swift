@@ -69,6 +69,7 @@ struct SectionLabel: View {
             .foregroundStyle(theme.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityLabel(text)
+            .accessibilityIdentifier("section-\(text)")
     }
 }
 
