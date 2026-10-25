@@ -28,7 +28,8 @@ Pinned inputs:
 - coremltools `9.0`
 - compute precision FP16, deployment target iOS 17
 - inputs `frame0`, `frame1` as float32 `1×3×H×W`, `timestep` as float32 `1×1×1×1`
-- output `output`
+- output `output` as float32
+- weights and intermediate math are FP16. The interface stays float32 because coremltools 9 otherwise publishes FLOAT16 inputs, and a float32 buffer is then interpreted as half-precision bits.
 
 `--check-only` runs PyTorch at 256×384 with timestep 0 and requires mean absolute error under 0.02 against the first frame. On macOS the script also predicts each package and writes `build/models/benchmark-macos.json`. Those times are Core ML on the Mac, not on an iPhone. Linux cannot execute the packages (`libcoremlpython` is missing); CI compiles them with `xcrun coremlcompiler` and times the smallest one in the iOS Simulator. Simulator times are also not iPhone times.
 
