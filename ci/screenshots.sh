@@ -42,6 +42,17 @@ xcrun simctl status_bar "${UDID}" override \
 
 xcrun simctl install "${UDID}" "${APP}"
 
+VIDEO="${OUT}/screens-tour.mp4"
+xcrun simctl io "${UDID}" recordVideo --codec=h264 --force "${VIDEO}" >/tmp/evii-screens-record.log 2>&1 &
+RECORD_PID=$!
+cleanup() {
+  if kill -0 "${RECORD_PID}" 2>/dev/null; then
+    kill -INT "${RECORD_PID}" 2>/dev/null || true
+    wait "${RECORD_PID}" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
 SCREENS=(home interpolation interp-settings export slowmo processing done queue settings)
 for name in "${SCREENS[@]}"; do
   xcrun simctl terminate "${UDID}" com.evii.frames >/dev/null 2>&1 || true

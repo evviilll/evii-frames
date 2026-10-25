@@ -54,6 +54,7 @@ struct PrimaryButton: View {
             .background(theme.lime, in: Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier(title.hasPrefix("Старт") ? "start-button" : "primary-button")
     }
 }
 
@@ -141,6 +142,8 @@ struct ToggleRow: View {
             Toggle("", isOn: $isOn)
                 .labelsHidden()
                 .tint(theme.lime)
+                .accessibilityLabel(title)
+                .accessibilityIdentifier("toggle-\(title)")
         }
     }
 }
@@ -169,6 +172,7 @@ struct NavRow: View {
             .padding(.vertical, 6)
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("nav-\(title)")
     }
 }
 
@@ -223,6 +227,8 @@ struct ThemeButton: View {
                 .font(.system(size: 18, weight: .regular))
                 .foregroundStyle(theme.text)
         }
+        .accessibilityIdentifier("theme-toggle")
+        .accessibilityLabel("Тема")
     }
 }
 

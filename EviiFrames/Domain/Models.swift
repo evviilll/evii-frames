@@ -141,6 +141,12 @@ enum MaxFPSChoice: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+enum DynamicRangeKind: String, Codable, Equatable {
+    case sdr
+    case hdr
+    case dolbyVision
+}
+
 enum MaxResolution: String, Codable, CaseIterable, Identifiable {
     case original
     case uhd4k
@@ -250,6 +256,12 @@ struct VideoInfo: Equatable, Codable {
     var creationDate: Date? = nil
     var latitude: Double? = nil
     var longitude: Double? = nil
+    /// PQ/HLG is tone-mapped when frames are read as BGRA. Dolby Vision is not preserved.
+    var dynamicRange: DynamicRangeKind = .sdr
+    /// Nominal fps will be used to conform the timeline.
+    var variableFrameRate: Bool = false
+    /// Odd sizes are made even. Very small frames are kept, and the import note says so.
+    var dimensionsAdjusted: Bool = false
 }
 
 struct SourceWindow: Equatable, Codable {

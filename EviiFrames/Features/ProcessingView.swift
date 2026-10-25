@@ -17,6 +17,7 @@ struct ProcessingView: View {
                     Button("Скасувати") { model.cancelProcessing() }
                         .font(.system(size: 17))
                         .foregroundStyle(theme.text)
+                        .accessibilityIdentifier("cancel-processing")
                 }
             }
             .foregroundStyle(theme.text)

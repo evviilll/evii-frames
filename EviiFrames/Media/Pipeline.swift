@@ -53,8 +53,11 @@ struct PipelineCallbacks {
 final class VideoPipeline {
     private let context = CIContext(options: [.cacheIntermediates: false])
     private var lastPreview = Date.distantPast
+    /// Full frames kept at once. A streaming run stays at a handful, including frame 0 when looping.
+    private(set) var peakCachedFrames = 0
 
     func run(job: ClipJob, queueIndex: Int, queueCount: Int, callbacks: PipelineCallbacks) async throws -> JobResult {
+        var job = job
         let started = Date()
         var progress = PipelineProgress()
         progress.queueIndex = queueIndex
@@ -118,6 +121,12 @@ final class VideoPipeline {
         let plan = Planner.plan(request)
         guard !plan.samples.isEmpty else { throw PipelineError.writer("Порожній план кадрів") }
 
+        let resolved = EncoderSupport.resolved(job.export.codec)
+        if let note = resolved.note {
+            callbacks.log(note)
+        }
+        job.export.codec = resolved.codec
+
         let outputURL = try outputURL(for: job, fps: plan.outputFPS)
         let audioPlan: AudioPlan = {
             guard job.export.keepAudio, job.info.hasAudio else { return .none }
@@ -154,6 +163,7 @@ final class VideoPipeline {
         var rateStart = Date()
         var rateFrames = 0
 
+        var written = 0
         for (ordinal, sample) in plan.samples.enumerated() {
             try check(callbacks)
             if ProcessInfo.processInfo.thermalState == .serious || ProcessInfo.processInfo.thermalState == .critical {
@@ -166,6 +176,7 @@ final class VideoPipeline {
                 guard let frame = source.next() else { break }
                 cache[readIndex] = frame
                 readIndex += 1
+                peakCachedFrames = max(peakCachedFrames, cache.count)
             }
             guard let left = cache[sample.left] ?? cache[max(0, readIndex - 1)] else { break }
             let right = cache[sample.right] ?? left
@@ -176,11 +187,13 @@ final class VideoPipeline {
                 rendered = try model.interpolate(frame0: left, frame1: right, timestep: sample.timestep)
             }
             try await append(rendered, at: sample.presentationSeconds, writer: writer)
+            written += 1
             if request.loop {
                 cache = cache.filter { $0.key == 0 || $0.key >= sample.left }
             } else {
                 cache = cache.filter { $0.key >= sample.left }
             }
+            peakCachedFrames = max(peakCachedFrames, cache.count)
             rateFrames += 1
             let elapsed = Date().timeIntervalSince(rateStart)
             if elapsed >= 0.4 {
@@ -197,6 +210,13 @@ final class VideoPipeline {
             let preview = Date().timeIntervalSince(lastPreview) > 0.25 ? cgImage(rendered) : nil
             if preview != nil { lastPreview = Date() }
             callbacks.progress(progress, preview)
+        }
+
+        if written == 0 {
+            throw PipelineError.writer("Жоден кадр не записано")
+        }
+        if written != plan.samples.count {
+            throw PipelineError.writer("Записано \(written) з \(plan.samples.count) кадрів")
         }
 
         progress.phase = .encoding
@@ -217,7 +237,7 @@ final class VideoPipeline {
         return JobResult(
             url: outputURL,
             filename: outputURL.lastPathComponent,
-            frameCount: plan.samples.count,
+            frameCount: written,
             fps: plan.outputFPS,
             duration: displayedDuration(job: job, plan: plan),
             fileSize: bytes,
@@ -304,10 +324,7 @@ final class VideoPipeline {
         if job.export.keepMetadata {
             writer.metadata = metadataItems(job.info)
         }
-        var codec = job.export.codec
-        if codec == .prores && !EncoderSupport.proResAvailable() {
-            codec = .hevc
-        }
+        let codec = EncoderSupport.resolved(job.export.codec).codec
         let video = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings(codec: codec, size: size, fps: fps, job: job))
         video.expectsMediaDataInRealTime = false
         guard writer.canAdd(video) else { throw PipelineError.writer("Кодек \(codec.title) недоступний на цьому пристрої") }
@@ -488,23 +505,63 @@ final class VideoPipeline {
         do {
             guard let track = try await asset.loadTracks(withMediaType: .audio).first else { return }
             let reader = try AVAssetReader(asset: asset)
+            let start = CMTime(seconds: max(0, job.window.start), preferredTimescale: 60_000)
+            reader.timeRange = CMTimeRange(
+                start: start,
+                duration: CMTime(seconds: max(0.01, job.window.duration), preferredTimescale: 60_000)
+            )
             let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
             guard reader.canAdd(output) else { return }
             reader.add(output)
             guard reader.startReading() else { return }
+            var origin: CMTime?
             while let sample = output.copyNextSampleBuffer() {
-                let pts = CMSampleBufferGetPresentationTimeStamp(sample).seconds
-                if pts > limit + 0.05 { break }
+                let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+                if origin == nil { origin = pts.isNumeric ? pts : .zero }
+                let local = CMTimeSubtract(pts, origin ?? .zero).seconds
+                if local > limit + 0.05 { break }
+                guard let shifted = Self.retimed(sample, subtracting: origin ?? .zero) else { continue }
                 var spins = 0
                 while !input.isReadyForMoreMediaData && spins < 3000 {
                     try await Task.sleep(nanoseconds: 10_000_000)
                     spins += 1
                 }
-                if !input.append(sample) { break }
+                if !input.append(shifted) { break }
             }
         } catch {
             callbacks.log("Аудіо пропущено: \(error.localizedDescription)")
         }
+    }
+
+    /// Sample timestamps from a trimmed reader stay on the source timeline.
+    /// Video frames are written from 0, so audio has to move with them.
+    private static func retimed(_ sample: CMSampleBuffer, subtracting origin: CMTime) -> CMSampleBuffer? {
+        let count = max(CMSampleBufferGetNumSamples(sample), 1)
+        var entries = [CMSampleTimingInfo](repeating: .invalid, count: count)
+        var needed: CMItemCount = 0
+        guard CMSampleBufferGetSampleTimingInfoArray(
+            sample,
+            entryCount: entries.count,
+            arrayToFill: &entries,
+            entriesNeededOut: &needed
+        ) == noErr else { return nil }
+        for index in entries.indices {
+            if entries[index].presentationTimeStamp.isNumeric {
+                entries[index].presentationTimeStamp = CMTimeSubtract(entries[index].presentationTimeStamp, origin)
+            }
+            if entries[index].decodeTimeStamp.isNumeric {
+                entries[index].decodeTimeStamp = CMTimeSubtract(entries[index].decodeTimeStamp, origin)
+            }
+        }
+        var copy: CMSampleBuffer?
+        let status = CMSampleBufferCreateCopyWithNewTiming(
+            allocator: kCFAllocatorDefault,
+            sampleBuffer: sample,
+            sampleTimingEntryCount: entries.count,
+            sampleTimingArray: &entries,
+            sampleBufferOut: &copy
+        )
+        return status == noErr ? copy : nil
     }
 
     private func writePCM(

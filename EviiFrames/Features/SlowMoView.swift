@@ -17,6 +17,7 @@ struct SlowMoView: View {
             Button("Далі") { model.start(jobID) }
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(theme.lime)
+                .accessibilityIdentifier("slowmo-next")
         }
     }
 

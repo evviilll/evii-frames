@@ -113,6 +113,7 @@ struct DoneView: View {
                         .background(theme.card, in: Capsule())
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("edit-again")
             }
             .foregroundStyle(theme.text)
 

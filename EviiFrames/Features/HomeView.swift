@@ -140,6 +140,7 @@ struct HomeView: View {
             )
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier(mode == .slowMo ? "mode-slow" : "mode-interp")
     }
 }
 

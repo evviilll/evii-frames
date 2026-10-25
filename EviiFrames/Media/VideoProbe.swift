@@ -32,26 +32,32 @@ enum VideoProbe {
         async let naturalSize = track.load(.naturalSize)
         async let transform = track.load(.preferredTransform)
         async let nominal = track.load(.nominalFrameRate)
+        async let minFrame = track.load(.minFrameDuration)
         async let assetDuration = asset.load(.duration)
         async let descriptions = track.load(.formatDescriptions)
         async let audioTracks = asset.loadTracks(withMediaType: .audio)
         async let metadata = asset.load(.metadata)
 
         let transformed = CGRect(origin: .zero, size: try await naturalSize).applying(try await transform)
-        let width = max(2, Int(abs(transformed.width).rounded()))
-        let height = max(2, Int(abs(transformed.height).rounded()))
-        var fps = Double(try await nominal)
+        let rawWidth = max(1, Int(abs(transformed.width).rounded()))
+        let rawHeight = max(1, Int(abs(transformed.height).rounded()))
+        let pixels = normalizedPixels(width: rawWidth, height: rawHeight)
+        let rawFPS = Double(try await nominal)
+        let variable = isVariableFrameRate(nominalFPS: rawFPS, minFrameDuration: try await minFrame)
+        var fps = rawFPS
         if fps < 1 { fps = 30 }
         let duration = max(0, try await assetDuration.seconds)
         let frames = max(1, Int((duration * fps).rounded()))
         let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value ?? 0
-        let codec = codecLabel(try await descriptions.first)
+        let description = try await descriptions.first
+        let codec = codecLabel(description)
+        let range = description.map(dynamicRange(of:)) ?? .sdr
         let meta = try await readMetadata(try await metadata)
         let filename = url.deletingPathExtension().lastPathComponent
         return VideoInfo(
             filename: filename.isEmpty ? "Відео" : filename,
-            width: width,
-            height: height,
+            width: pixels.width,
+            height: pixels.height,
             fps: fps,
             duration: duration,
             frameCount: frames,
@@ -60,8 +66,80 @@ enum VideoProbe {
             codecLabel: codec,
             creationDate: meta.date,
             latitude: meta.lat,
-            longitude: meta.lon
+            longitude: meta.lon,
+            dynamicRange: range,
+            variableFrameRate: variable,
+            dimensionsAdjusted: pixels.adjusted
         )
+    }
+
+    static func importNotes(_ info: VideoInfo) -> [String] {
+        var notes: [String] = []
+        if info.duration > Timing.clipLimit + 0.05 {
+            notes.append("Кліп довший за 30 с — взято перші 30 с.")
+        }
+        switch info.dynamicRange {
+        case .sdr:
+            break
+        case .hdr:
+            notes.append("HDR буде зведено до SDR.")
+        case .dolbyVision:
+            notes.append("Dolby Vision буде зведено до SDR.")
+        }
+        if info.variableFrameRate {
+            notes.append("Змінна частота кадрів буде вирівняна до \(Format.fps(info.fps)).")
+        }
+        if info.dimensionsAdjusted {
+            notes.append("Непарний або дуже малий розмір вирівняно до парних пікселів.")
+        }
+        return notes
+    }
+
+    /// Even dimensions only. A side under 64 px is still encoded, and `adjusted` asks the UI to say so.
+    static func normalizedPixels(width: Int, height: Int) -> (width: Int, height: Int, adjusted: Bool) {
+        let rawW = max(1, width)
+        let rawH = max(1, height)
+        let evenW = Geometry.even(rawW)
+        let evenH = Geometry.even(rawH)
+        let odd = rawW % 2 != 0 || rawH % 2 != 0
+        let tiny = evenW < 64 || evenH < 64
+        return (evenW, evenH, odd || tiny || evenW != rawW || evenH != rawH)
+    }
+
+    /// Peak frame rate more than 35% above nominal means the file is not a steady timeline.
+    static func isVariableFrameRate(nominalFPS: Double, minFrameDuration: CMTime) -> Bool {
+        guard nominalFPS > 1, minFrameDuration.isNumeric, minFrameDuration.seconds > 0.00001 else { return false }
+        return (1.0 / minFrameDuration.seconds) > nominalFPS * 1.35
+    }
+
+    static func dynamicRange(fourcc: String, transfer: String?, atomKeys: [String]) -> DynamicRangeKind {
+        let dolby: Set<String> = ["dvh1", "dvhe", "dav1", "dvav", "dva1"]
+        if dolby.contains(fourcc.lowercased()) || atomKeys.contains(where: { ["dvvC", "dvcC", "dvwC"].contains($0) }) {
+            return .dolbyVision
+        }
+        if let transfer {
+            let pq = kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ as String
+            let hlg = kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG as String
+            let folded = transfer.lowercased()
+            if transfer == pq || transfer == hlg || folded.contains("2084") || folded.contains("2100") || folded.contains("hlg") || folded.contains("pq") {
+                return .hdr
+            }
+        }
+        return .sdr
+    }
+
+    private static func dynamicRange(of description: CMFormatDescription) -> DynamicRangeKind {
+        let subtype = CMFormatDescriptionGetMediaSubType(description)
+        let transfer = CMFormatDescriptionGetExtension(description, kCMFormatDescriptionExtension_TransferFunction).flatMap { value -> String? in
+            if let text = value as? String { return text }
+            if let text = value as? NSString { return text as String }
+            return nil
+        }
+        var atoms: [String] = []
+        if let box = CMFormatDescriptionGetExtension(description, kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms) as? NSDictionary {
+            atoms = box.allKeys.compactMap { $0 as? String }
+        }
+        return dynamicRange(fourcc: fourcc(subtype), transfer: transfer, atomKeys: atoms)
     }
 
     static func posterJPEG(_ url: URL) async -> Data? {
@@ -75,6 +153,16 @@ enum VideoProbe {
         return ui.jpegData(compressionQuality: 0.8)
     }
 
+    private static func fourcc(_ subtype: FourCharCode) -> String {
+        let bytes: [UInt8] = [
+            UInt8((subtype >> 24) & 0xff),
+            UInt8((subtype >> 16) & 0xff),
+            UInt8((subtype >> 8) & 0xff),
+            UInt8(subtype & 0xff),
+        ]
+        return String(bytes: bytes, encoding: .ascii) ?? "Відео"
+    }
+
     private static func codecLabel(_ description: CMFormatDescription?) -> String {
         guard let description else { return "Відео" }
         let subtype = CMFormatDescriptionGetMediaSubType(description)
@@ -83,14 +171,9 @@ enum VideoProbe {
         case kCMVideoCodecType_H264: return "H.264"
         case kCMVideoCodecType_AppleProRes422: return "ProRes"
         default:
-            let bytes: [UInt8] = [
-                UInt8((subtype >> 24) & 0xff),
-                UInt8((subtype >> 16) & 0xff),
-                UInt8((subtype >> 8) & 0xff),
-                UInt8(subtype & 0xff),
-            ]
-            let text = String(bytes: bytes, encoding: .ascii) ?? "Відео"
-            if text.hasPrefix("ap") { return "ProRes" }
+            let text = fourcc(subtype)
+            if text.lowercased().hasPrefix("ap") { return "ProRes" }
+            if dynamicRange(fourcc: text, transfer: nil, atomKeys: []) == .dolbyVision { return "Dolby Vision" }
             return text.trimmingCharacters(in: .whitespaces)
         }
     }

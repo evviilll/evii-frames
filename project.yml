@@ -79,15 +79,34 @@ targets:
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGNING_REQUIRED: NO
         CODE_SIGNING_ALLOWED: YES
+  EviiFramesUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: EviiFramesUITests
+    dependencies:
+      - target: EviiFrames
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.evii.frames.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: EviiFrames
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGNING_ALLOWED: YES
 schemes:
   EviiFrames:
     build:
       targets:
         EviiFrames: all
         EviiFramesTests: [test]
+        EviiFramesUITests: [test]
     test:
       targets:
         - EviiFramesTests
+        - EviiFramesUITests
       gatherCoverageData: false
     archive:
       config: Release

@@ -98,21 +98,62 @@ jobs:
 
       - name: Unit tests and simulator benchmark
         run: |
+          set +e
           set -o pipefail
           xcodebuild test \
             -project EviiFrames.xcodeproj \
             -scheme EviiFrames \
             -destination "platform=iOS Simulator,id=${UDID}" \
             -derivedDataPath build/DerivedData \
+            -only-testing:EviiFramesTests \
             -parallel-testing-enabled NO \
             CODE_SIGNING_ALLOWED=YES \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
             ENABLE_DEBUG_DYLIB=NO \
             | tee build/test.log
+          status=$?
+          mkdir -p build/benchmark
           grep EVII_BENCH build/test.log > build/benchmark/benchmark-simulator.txt || true
+          grep EVII_QA build/test.log > build/benchmark/qa.txt || true
+          exit "${status}"
+
+      - name: UI tests with simulator video
+        if: always()
+        run: |
+          set +e
+          mkdir -p build/videos build/benchmark
+          xcrun simctl boot "${UDID}" || true
+          xcrun simctl bootstatus "${UDID}" -b
+          xcrun simctl io "${UDID}" recordVideo --codec=h264 --force build/videos/ui-flows.mp4 >/tmp/evii-ui-record.log 2>&1 &
+          echo $! > /tmp/evii-ui-record.pid
+          set -o pipefail
+          xcodebuild test \
+            -project EviiFrames.xcodeproj \
+            -scheme EviiFrames \
+            -destination "platform=iOS Simulator,id=${UDID}" \
+            -derivedDataPath build/DerivedData \
+            -only-testing:EviiFramesUITests \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            ENABLE_DEBUG_DYLIB=NO \
+            | tee build/uitest.log
+          status=$?
+          if [ -f /tmp/evii-ui-record.pid ]; then
+            kill -INT "$(cat /tmp/evii-ui-record.pid)" 2>/dev/null || true
+            for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+              kill -0 "$(cat /tmp/evii-ui-record.pid)" 2>/dev/null || break
+              sleep 1
+            done
+            wait "$(cat /tmp/evii-ui-record.pid)" 2>/dev/null || true
+          fi
+          ls -lh build/videos || true
+          exit "${status}"
 
       - name: Simulator screenshots
+        if: always()
         run: |
           APP="build/DerivedData/Build/Products/Debug-iphonesimulator/EviiFrames.app"
           test -d "${APP}"
@@ -143,6 +184,56 @@ jobs:
           (cd build && zip -qry EviiFrames-0.1.0-unsigned.ipa Payload)
           unzip -l build/EviiFrames-0.1.0-unsigned.ipa | head
 
+      - name: Simulator app for Appetize
+        if: always()
+        run: |
+          set +e
+          mkdir -p build/simulator
+          xcodebuild build \
+            -project EviiFrames.xcodeproj \
+            -scheme EviiFrames \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "generic/platform=iOS Simulator" \
+            -derivedDataPath build/SimDerived \
+            ARCHS="arm64 x86_64" \
+            ONLY_ACTIVE_ARCH=NO \
+            "EXCLUDED_ARCHS=" \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            ENABLE_DEBUG_DYLIB=NO
+          fat=$?
+          if [ "${fat}" -ne 0 ]; then
+            echo "universal simulator build failed; keeping arm64" | tee build/simulator/ARCH.txt
+            xcodebuild build \
+              -project EviiFrames.xcodeproj \
+              -scheme EviiFrames \
+              -configuration Debug \
+              -sdk iphonesimulator \
+              -destination "generic/platform=iOS Simulator" \
+              -derivedDataPath build/SimDerived \
+              ARCHS=arm64 \
+              ONLY_ACTIVE_ARCH=NO \
+              CODE_SIGNING_ALLOWED=YES \
+              CODE_SIGN_IDENTITY="-" \
+              CODE_SIGNING_REQUIRED=NO \
+              ENABLE_DEBUG_DYLIB=NO
+            if [ "$?" -ne 0 ]; then
+              echo "simulator build failed" | tee -a build/simulator/ARCH.txt
+              exit 1
+            fi
+          fi
+          APP="$(find build/SimDerived/Build/Products -type d -name EviiFrames.app -path '*iphonesimulator*' | head -n 1)"
+          if [ -z "${APP}" ] || [ ! -d "${APP}" ]; then
+            echo "simulator .app was not produced" | tee build/simulator/ARCH.txt
+            exit 1
+          fi
+          lipo -info "${APP}/EviiFrames" | tee build/simulator/ARCH.txt
+          ditto -c -k --keepParent "${APP}" build/simulator/EviiFrames-0.1.0-simulator.zip
+          ls -lh build/simulator/EviiFrames-0.1.0-simulator.zip
+          unzip -l build/simulator/EviiFrames-0.1.0-simulator.zip | head
+
       - name: Upload IPA, screenshots, timings
         if: always()
         uses: actions/upload-artifact@v4
@@ -152,8 +243,11 @@ jobs:
           path: |
             build/EviiFrames-0.1.0-unsigned.ipa
             build/screenshots
+            build/videos
+            build/simulator
             build/benchmark
             build/test.log
+            build/uitest.log
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')

@@ -89,8 +89,9 @@ final class AppModel: ObservableObject {
                     export: export,
                     thumbnailJPEG: thumb
                 )
-                if info.duration > Timing.clipLimit + 0.05 {
-                    job.note = "Кліп довший за 30 с — взято перші 30 с."
+                let notes = VideoProbe.importNotes(info)
+                if !notes.isEmpty {
+                    job.note = notes.joined(separator: " ")
                 }
                 jobs.append(job)
                 created.append(job.id)
@@ -337,6 +338,10 @@ final class AppModel: ObservableObject {
             jobs = [done, slow]
             activeJobID = done.id
             cover = .done(done.id)
+        case "unsupported":
+            tab = .home
+            path = []
+            alert = "Не вдалося прочитати відео. У файлі немає відеодоріжки."
         default:
             tab = .home
         }

@@ -60,7 +60,13 @@ xcodebuild test -project EviiFrames.xcodeproj -scheme EviiFrames \
   CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO
 ```
 
-The unsigned archive is the `ipa` job in `.github/workflows/ios.yml`.
+The unsigned archive is the `ipa` job in `.github/workflows/ios.yml`. The same job also zips a simulator `.app` (`EviiFrames-0.1.0-simulator.zip`, arm64 and x86_64 when the runner can link both) for Appetize.io. `build/simulator/ARCH.txt` is the `lipo` output.
+
+## What CI actually runs
+
+Hosted tests build short H.264 clips and run the real pipeline: ×2 / ×4 / ×8 / ×16, target fps, a max-fps cap, whole-clip and fragment slow motion, a scene cut, duplicate frames, loop, portrait and landscape, 30 and 60 fps, audio on and off, a trimmed window (audio must start at 0), HEVC, and ProRes when the simulator has the encoder. A 1 s and a 2 s clip finish at ×2. A 30 s clip and a 1080p 30 s ×8 clip are analysed and cancelled after the first interpolated frame. Those two check that full frames stay in a small cache and that `phys_footprint` stays under 5 GiB of the iPhone 14 Pro's 6 GB. They do not interpolate every 1080p frame. XCUITest taps the screens, including cancel, background/foreground, and the unsupported-file alert. Empty, audio-only, HDR (PQ), variable frame timing, and odd or tiny sizes are probed in the unit suite. `xcrun simctl io recordVideo` saves `screens-tour.mp4` and `ui-flows.mp4` next to the screenshots.
+
+Simulator and Mac numbers are not iPhone 14 Pro timings. HDR is decoded as SDR BGRA. A real Dolby Vision bitstream is classified by fourcc, not generated here. If the simulator cannot encode HEVC or ProRes, the export falls back and the log says so.
 
 ## Встановлення через AltStore
 

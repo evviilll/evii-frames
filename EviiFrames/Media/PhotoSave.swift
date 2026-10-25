@@ -21,11 +21,31 @@ enum PhotoSave {
 
 enum EncoderSupport {
     static func proResAvailable() -> Bool {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("evii-prores-\(UUID().uuidString).mov")
+        canWrite(codec: .proRes422)
+    }
+
+    static func hevcAvailable() -> Bool {
+        canWrite(codec: .hevc)
+    }
+
+    /// ProRes and HEVC are not on every simulator. Fall back instead of failing the export.
+    static func resolved(_ codec: CodecChoice) -> (codec: CodecChoice, note: String?) {
+        if codec == .prores && !proResAvailable() {
+            let next: CodecChoice = hevcAvailable() ? .hevc : .h264
+            return (next, "ProRes недоступний на цьому пристрої. Записую \(next.title).")
+        }
+        if codec == .hevc && !hevcAvailable() {
+            return (.h264, "HEVC недоступний на цьому пристрої. Записую H.264.")
+        }
+        return (codec, nil)
+    }
+
+    private static func canWrite(codec: AVVideoCodecType) -> Bool {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("evii-codec-\(UUID().uuidString).mov")
         defer { try? FileManager.default.removeItem(at: url) }
         guard let writer = try? AVAssetWriter(outputURL: url, fileType: .mov) else { return false }
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
-            AVVideoCodecKey: AVVideoCodecType.proRes422,
+            AVVideoCodecKey: codec,
             AVVideoWidthKey: 64,
             AVVideoHeightKey: 64,
         ])
