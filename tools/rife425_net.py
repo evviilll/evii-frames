@@ -4,6 +4,39 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def resize_bilinear(x, scale_factor):
+    """Match F.interpolate bilinear with align_corners=False.
+
+    Core ML's upsample_bilinear does not. A fixed-shape trace of that op was
+    0.197 mean-abs away from PyTorch at t=0.5 on CPU, GPU, and the Neural
+    Engine, while t=0 still looked fine because the flow is ~0 there.
+    grid_sample with this source grid matches interpolate to 1e-6 and lowers
+    to a resample op.
+    """
+    n, _, h, w = x.shape
+    oh = int(h * scale_factor)
+    ow = int(w * scale_factor)
+    dtype = x.dtype
+    device = x.device
+    dst_y = torch.arange(oh, device=device, dtype=dtype)
+    dst_x = torch.arange(ow, device=device, dtype=dtype)
+    src_y = (dst_y + 0.5) / float(scale_factor) - 0.5
+    src_x = (dst_x + 0.5) / float(scale_factor) - 0.5
+    # align_corners=False unnormalize: g = (2*src + 1)/size - 1
+    gy = (src_y * 2.0 + 1.0) / float(h) - 1.0
+    gx = (src_x * 2.0 + 1.0) / float(w) - 1.0
+    grid_y = gy.view(1, oh, 1).expand(n, oh, ow)
+    grid_x = gx.view(1, 1, ow).expand(n, oh, ow)
+    sampling_grid = torch.stack((grid_x, grid_y), 3)
+    return F.grid_sample(
+        x,
+        sampling_grid,
+        mode="bilinear",
+        padding_mode="border",
+        align_corners=False,
+    )
+
+
 def warp(tenInput, tenFlow):
     b, _, h, w = tenFlow.shape
     device = tenFlow.device
@@ -85,15 +118,13 @@ class IFBlock(nn.Module):
         )
 
     def forward(self, x, flow, scale):
-        x = F.interpolate(x, scale_factor=1.0 / scale, mode="bilinear", align_corners=False)
+        x = resize_bilinear(x, 1.0 / scale)
         if flow is not None:
-            flow = F.interpolate(
-                flow, scale_factor=1.0 / scale, mode="bilinear", align_corners=False
-            ) * (1.0 / scale)
+            flow = resize_bilinear(flow, 1.0 / scale) * (1.0 / scale)
             x = torch.cat((x, flow), 1)
         feat = self.convblock(self.conv0(x))
         tmp = self.lastconv(feat)
-        tmp = F.interpolate(tmp, scale_factor=scale, mode="bilinear", align_corners=False)
+        tmp = resize_bilinear(tmp, scale)
         flow = tmp[:, :4] * scale
         mask = tmp[:, 4:5]
         feat = tmp[:, 5:]

@@ -30,15 +30,15 @@ Clips are limited to 30 seconds. Typical clips are 1–2 seconds, so the default
 
 The phone this build is aimed at is an iPhone 14 Pro: A16 Bionic, 6 GB of RAM, iOS 27. The deployment target stays iOS 17, `MinimumOSVersion` is 17.0, and there is no maximum system version, so iOS 27 can install it. `UIRequiredDeviceCapabilities` is `arm64`.
 
-The default max resolution is 1080p. Packages stop at 1088×1920 and 1920×1088. Core ML is FP16 and tries the Neural Engine first (`cpuAndNeuralEngine`), then `.all`, the GPU, and the CPU. A 4K activation is not loaded.
-- **FP32** stores the toggle. The shipped packages are FP16.
+The default max resolution is 1080p. Packages stop at 1088×1920 and 1920×1088. Convolutions are FP16 so a 1080p frame fits in 6 GB. The warp and the bilinear resize stay FP32 (`resample`); Core ML's own upsample did not match PyTorch. The loader tries the Neural Engine first (`cpuAndNeuralEngine`), then the GPU, then `.all`, then the CPU. A 4K activation is not loaded.
+- **FP32** stores the toggle. It does not swap in a full-float package.
 - The before/after control compares the poster still with the latest generated frame. It does not play the file at 0.25×. Playback is in Photos.
 - Scene detection and dedup run on a 96×96 CPU luma plane (fast grid 8, accurate grid 24), not a Metal kernel.
 - The phone can get hot. The pipeline pauses while the thermal state is serious or critical. There is no background GPU session. Leave the app open.
 
 ## Model
 
-`tools/convert_rife425.py` downloads Practical-RIFE 4.25, checks sha256 `e63d481b7ae5d4a4e6ad7ac5b410ff78f3bf7be3b51b2e38ca8152747abde5b4`, and writes fixed-shape FP16 `mlprogram` packages. See [tools/README.md](tools/README.md). Packages are not in git. CI caches them, compiles with `coremlcompiler`, and copies the `.mlmodelc` into the app.
+`tools/convert_rife425.py` downloads Practical-RIFE 4.25, checks sha256 `e63d481b7ae5d4a4e6ad7ac5b410ff78f3bf7be3b51b2e38ca8152747abde5b4`, and writes fixed-shape `mlprogram` packages (FP16 convs, FP32 resample). See [tools/README.md](tools/README.md). Packages are not in git. CI caches them, compiles with `coremlcompiler`, and copies the `.mlmodelc` into the app.
 
 Simulator and Mac Core ML timings are printed as `EVII_BENCH` and `benchmark-macos.json`. They are not iPhone timings.
 

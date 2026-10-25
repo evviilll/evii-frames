@@ -54,8 +54,8 @@ final class RIFEModel {
     init(url: URL, height: Int, width: Int) throws {
         self.height = height
         self.width = width
-        // A16, 6 GB. The warp itself is FP32 inside the package; the convolutions
-        // are FP16. Neural Engine first, then GPU, then CPU.
+        // A16, 6 GB. Convolutions are FP16. The warp and the bilinear resize are
+        // FP32 resamples. Neural Engine, then GPU, then .all, then CPU.
         let units: [MLComputeUnits] = [.cpuAndNeuralEngine, .cpuAndGPU, .all, .cpuOnly]
         var last: Error = PipelineError.modelMissing(url.lastPathComponent)
         var loaded: (MLModel, String)?

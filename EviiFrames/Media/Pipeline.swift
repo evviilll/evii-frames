@@ -67,7 +67,7 @@ final class VideoPipeline {
             callbacks.log("UHD: окрему Core ML-модель зі scale 0.5 не зібрано. Лишаю RIFE 4.25.")
         }
         if job.interpolation.preferFP32 {
-            callbacks.log("FP32: зібрана модель — FP16. Перемикач у v0.1 не змінює ваги.")
+            callbacks.log("FP32: зібрана модель — згортки FP16, варп FP32. Перемикач у v0.1 не змінює ваги.")
         }
         switch job.interpolation.model {
         case .rife425:

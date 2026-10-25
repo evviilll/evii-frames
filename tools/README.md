@@ -1,6 +1,6 @@
 # RIFE 4.25 → Core ML
 
-The app runs [Practical-RIFE](https://github.com/hzwer/Practical-RIFE) 4.25 (MIT, hzwer). This script downloads the published `train_log` zip, checks the weights, and writes one FP16 `mlprogram` per input size.
+The app runs [Practical-RIFE](https://github.com/hzwer/Practical-RIFE) 4.25 (MIT, hzwer). This script downloads the published `train_log` zip, checks the weights, and writes one `mlprogram` per input size. Convolutions are FP16. Bilinear resize and the warp are FP32 `resample` ops, because Core ML `upsample_bilinear` does not match PyTorch `interpolate`.
 
 ## Why one file per size
 
@@ -26,11 +26,11 @@ Pinned inputs:
 - sha256 `e63d481b7ae5d4a4e6ad7ac5b410ff78f3bf7be3b51b2e38ca8152747abde5b4`
 - torch `2.7.0` (2.14 is too new for coremltools 9)
 - coremltools `9.0`
-- compute precision FP16, deployment target iOS 17
+- deployment target iOS 17
 - inputs `frame0`, `frame1` as float32 `1×3×H×W`, `timestep` as float32 `1×1×1×1`
-- output `output` as float32
-- weights and intermediate math are FP16. The interface stays float32 because coremltools 9 otherwise publishes FLOAT16 inputs, and a float32 buffer is then interpreted as half-precision bits.
+- output `output` as float32. The interface stays float32 because coremltools 9 otherwise publishes FLOAT16 inputs, and a float32 buffer is then interpreted as half-precision bits.
+- conv compute is FP16. `resample` (warp and bilinear resize) stays FP32. That is the memory compromise for an iPhone 14 Pro at 1080p.
 
-`--check-only` runs PyTorch at 256×384 with timestep 0 and requires mean absolute error under 0.02 against the first frame. On macOS the script also predicts each package and writes `build/models/benchmark-macos.json`. Those times are Core ML on the Mac, not on an iPhone. Linux cannot execute the packages (`libcoremlpython` is missing); CI compiles them with `xcrun coremlcompiler` and times the smallest one in the iOS Simulator. Simulator times are also not iPhone times.
+`--check-only` runs PyTorch at 256×384 with timestep 0 and requires mean absolute error under 0.02 against the first frame. On macOS the 256×384 package is predicted on CPU, CPU+GPU, and all compute units, against PyTorch, for both noise and a smooth 6 px shift. `1088×1920` gets one CPU+GPU timing. Results go to `build/models/benchmark-macos.json`. Those times are Core ML on the Mac, not on an iPhone. Linux cannot execute the packages (`libcoremlpython` is missing); CI compiles them with `xcrun coremlcompiler` and times the smallest one in the iOS Simulator. Simulator times are also not iPhone times.
 
 Teacher and `caltime` tensors in the checkpoint are training-only and are dropped. `module.` is stripped, then the keys are loaded into `RIFE425.net` with `strict=True`.

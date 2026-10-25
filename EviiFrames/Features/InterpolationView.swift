@@ -242,7 +242,7 @@ struct InterpolationSettingsView: View {
                             .font(.system(size: 12))
                             .foregroundStyle(theme.tertiary)
                         ToggleRow(title: "Точність FP32", subtitle: "Замість FP16: повільніше, рідко потрібно", isOn: binding(\.preferFP32))
-                        Text("Зібрана модель — FP16. Перемикач зберігається, ваги не змінює.")
+                        Text("Зібрана модель — згортки FP16, варп FP32. Перемикач зберігається, ваги не змінює.")
                             .font(.system(size: 12))
                             .foregroundStyle(theme.tertiary)
                     }

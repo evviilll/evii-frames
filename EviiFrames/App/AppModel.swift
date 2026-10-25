@@ -311,7 +311,7 @@ final class AppModel: ObservableObject {
         case "settings":
             tab = .settings
             path = []
-            logLines = ["9:41  RIFE 4.25 · FP16", "9:41  Готово до черги"]
+            logLines = ["9:41  RIFE 4.25 · FP16/FP32", "9:41  Готово до черги"]
         case "slowmo":
             tab = .home
             path = [.slowMo(slow.id)]
