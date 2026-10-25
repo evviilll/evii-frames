@@ -1,0 +1,419 @@
+import Foundation
+
+enum WorkMode: String, Codable, CaseIterable, Identifiable {
+    case slowMo
+    case interpolation
+
+    var id: String { rawValue }
+}
+
+enum ModelChoice: String, Codable, CaseIterable, Identifiable {
+    case rife425
+    case rife426
+    case rife426Heavy
+    case rife422
+    case rifeLite
+    case apple
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .rife425: return "RIFE 4.25"
+        case .rife426: return "RIFE 4.26"
+        case .rife426Heavy: return "RIFE heavy"
+        case .rife422: return "RIFE 4.22"
+        case .rifeLite: return "RIFE lite"
+        case .apple: return "Apple"
+        }
+    }
+
+    /// File prefix of the compiled packages. Longer names are matched first
+    /// (`RIFE425L` before `RIFE425`, `RIFE426H` before `RIFE426`).
+    var packagePrefix: String {
+        switch self {
+        case .rife425, .apple: return "RIFE425"
+        case .rife426: return "RIFE426"
+        case .rife426Heavy: return "RIFE426H"
+        case .rife422: return "RIFE422"
+        case .rifeLite: return "RIFE425L"
+        }
+    }
+
+    /// Apple FRC runs only when this phone's VideoToolbox says `isSupported`.
+    /// An iPhone 14 Pro on iOS 27 is not assumed to. Every RIFE row is a real package.
+    var engineAvailable: Bool {
+        switch self {
+        case .apple: return AppleFrameRate.isRuntimeSupported
+        case .rife425, .rife426, .rife426Heavy, .rife422, .rifeLite: return true
+        }
+    }
+}
+
+enum DedupMode: String, Codable, CaseIterable, Identifiable {
+    case off
+    case fast
+    case accurate
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .off: return "Вимк."
+        case .fast: return "Швидко"
+        case .accurate: return "Точно"
+        }
+    }
+}
+
+enum ProcessStyle: String, Codable, CaseIterable, Identifiable {
+    case together
+    case stepwise
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .together: return "Усе разом"
+        case .stepwise: return "Покроково"
+        }
+    }
+}
+
+enum FragmentAudio: String, Codable, CaseIterable, Identifiable {
+    case mute
+    case stretch
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .mute: return "Вимкнено"
+        case .stretch: return "Розтягнути"
+        }
+    }
+}
+
+enum CodecChoice: String, Codable, CaseIterable, Identifiable {
+    case hevc
+    case h264
+    case prores
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .hevc: return "HEVC"
+        case .h264: return "H.264"
+        case .prores: return "ProRes"
+        }
+    }
+}
+
+enum ContainerChoice: String, Codable, CaseIterable, Identifiable {
+    case mp4
+    case mov
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .mp4: return "MP4"
+        case .mov: return "MOV"
+        }
+    }
+
+    var fileExtension: String {
+        switch self {
+        case .mp4: return "mp4"
+        case .mov: return "mov"
+        }
+    }
+}
+
+enum MaxFPSChoice: String, Codable, CaseIterable, Identifiable {
+    case none
+    case p60
+    case p120
+    case p240
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .none: return "Без"
+        case .p60: return "60"
+        case .p120: return "120"
+        case .p240: return "240"
+        }
+    }
+
+    var fps: Double? {
+        switch self {
+        case .none: return nil
+        case .p60: return 60
+        case .p120: return 120
+        case .p240: return 240
+        }
+    }
+}
+
+enum DynamicRangeKind: String, Codable, Equatable {
+    case sdr
+    case hdr
+    case dolbyVision
+}
+
+enum MaxResolution: String, Codable, CaseIterable, Identifiable {
+    case original
+    case uhd4k
+    case p1080
+    case p720
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .original: return "Ориг."
+        case .uhd4k: return "4K"
+        case .p1080: return "1080p"
+        case .p720: return "720p"
+        }
+    }
+
+    /// Long edge, short edge. Nil keeps the source size.
+    var limit: (Int, Int)? {
+        switch self {
+        case .original: return nil
+        case .uhd4k: return (3840, 2160)
+        case .p1080: return (1920, 1080)
+        case .p720: return (1280, 720)
+        }
+    }
+}
+
+struct InterpolationSettings: Equatable, Codable {
+    var model: ModelChoice = .rife425
+    var useTargetFPS: Bool = false
+    var multiplier: Int = 4
+    var targetFPS: Double = 60
+    var skipSceneChanges: Bool = true
+    var sceneSensitivity: Double = 0.40
+    var dedup: DedupMode = .off
+    var dedupThresholdPercent: Double = 1.0
+    var loop: Bool = false
+    var uhd: Bool = false
+    /// Kept so a settings blob from 0.1.0 still decodes. The shipped graph is
+    /// FP16 conv + FP32 warp; a separate FP32 package is built only when the
+    /// smooth-shift probe shows a real gain, and this toggle does not select it.
+    var preferFP32: Bool = false
+    /// Four passes of the selected model: identity, horizontal flip, vertical
+    /// flip, and both. Official in-graph ensemble is a no-op since RIFE 4.21.
+    var maximumQuality: Bool = false
+    var style: ProcessStyle = .together
+
+    enum CodingKeys: String, CodingKey {
+        case model, useTargetFPS, multiplier, targetFPS, skipSceneChanges
+        case sceneSensitivity, dedup, dedupThresholdPercent, loop, uhd
+        case preferFP32, maximumQuality, style
+    }
+
+    var multiplierChoices: [Int] { [2, 4, 8, 16] }
+
+    func resolvedModel() -> ModelChoice {
+        model.engineAvailable ? model : .rife425
+    }
+}
+
+extension InterpolationSettings {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init()
+        model = try container.decodeIfPresent(ModelChoice.self, forKey: .model) ?? model
+        useTargetFPS = try container.decodeIfPresent(Bool.self, forKey: .useTargetFPS) ?? useTargetFPS
+        multiplier = try container.decodeIfPresent(Int.self, forKey: .multiplier) ?? multiplier
+        targetFPS = try container.decodeIfPresent(Double.self, forKey: .targetFPS) ?? targetFPS
+        skipSceneChanges = try container.decodeIfPresent(Bool.self, forKey: .skipSceneChanges) ?? skipSceneChanges
+        sceneSensitivity = try container.decodeIfPresent(Double.self, forKey: .sceneSensitivity) ?? sceneSensitivity
+        dedup = try container.decodeIfPresent(DedupMode.self, forKey: .dedup) ?? dedup
+        dedupThresholdPercent = try container.decodeIfPresent(Double.self, forKey: .dedupThresholdPercent) ?? dedupThresholdPercent
+        loop = try container.decodeIfPresent(Bool.self, forKey: .loop) ?? loop
+        uhd = try container.decodeIfPresent(Bool.self, forKey: .uhd) ?? uhd
+        preferFP32 = try container.decodeIfPresent(Bool.self, forKey: .preferFP32) ?? preferFP32
+        maximumQuality = try container.decodeIfPresent(Bool.self, forKey: .maximumQuality) ?? maximumQuality
+        style = try container.decodeIfPresent(ProcessStyle.self, forKey: .style) ?? style
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(model, forKey: .model)
+        try container.encode(useTargetFPS, forKey: .useTargetFPS)
+        try container.encode(multiplier, forKey: .multiplier)
+        try container.encode(targetFPS, forKey: .targetFPS)
+        try container.encode(skipSceneChanges, forKey: .skipSceneChanges)
+        try container.encode(sceneSensitivity, forKey: .sceneSensitivity)
+        try container.encode(dedup, forKey: .dedup)
+        try container.encode(dedupThresholdPercent, forKey: .dedupThresholdPercent)
+        try container.encode(loop, forKey: .loop)
+        try container.encode(uhd, forKey: .uhd)
+        try container.encode(preferFP32, forKey: .preferFP32)
+        try container.encode(maximumQuality, forKey: .maximumQuality)
+        try container.encode(style, forKey: .style)
+    }
+}
+
+struct SlowMoSettings: Equatable, Codable {
+    var wholeClip: Bool = true
+    /// Fraction of the active window, 0...1.
+    var fragmentStart: Double = 0.30
+    var fragmentEnd: Double = 0.75
+    var factor: Int = 4
+    var fragmentAudio: FragmentAudio = .mute
+
+    var factorChoices: [Int] { [2, 4, 8] }
+
+    func fragmentSeconds(duration: Double) -> ClosedRange<Double> {
+        let a = min(max(0, fragmentStart), 0.95) * duration
+        let b = min(max(a + 0.05, fragmentEnd * duration), duration)
+        return a...b
+    }
+
+    func speedLabel(for factor: Int) -> String {
+        switch factor {
+        case 2: return "0.5x"
+        case 4: return "0.25x"
+        case 8: return "0.125x"
+        default: return String(format: "%.3gx", 1.0 / Double(factor))
+        }
+    }
+}
+
+struct ExportSettings: Equatable, Codable {
+    var codec: CodecChoice = .hevc
+    var quality: Double = 75
+    var container: ContainerChoice = .mov
+    var maxFPS: MaxFPSChoice = .none
+    /// 1080p stays the default so an iPhone 14 Pro (A16, 6 GB) does not load
+    /// a 4K activation unless the user asks. 4K and original use the
+    /// 2176×3840 / 3840×2176 packages and are not scaled down.
+    var maxResolution: MaxResolution = .p1080
+    var keepAudio: Bool = true
+    var keepMetadata: Bool = true
+    var minimumDuration: Double? = nil
+    var filenamePattern: String = "{name}_{fps}fps"
+
+    var resolvedContainer: ContainerChoice {
+        codec == .prores ? .mov : container
+    }
+
+    static let minimumDurationPresets: [Double?] = [nil, 3, 5, 10, 15, 30]
+}
+
+struct VideoInfo: Equatable, Codable {
+    var filename: String
+    var width: Int
+    var height: Int
+    var fps: Double
+    var duration: Double
+    var frameCount: Int
+    var fileSize: Int64
+    var hasAudio: Bool
+    var codecLabel: String
+    var creationDate: Date? = nil
+    var latitude: Double? = nil
+    var longitude: Double? = nil
+    /// PQ/HLG is tone-mapped when frames are read as BGRA. Dolby Vision is not preserved.
+    var dynamicRange: DynamicRangeKind = .sdr
+    /// Nominal fps will be used to conform the timeline.
+    var variableFrameRate: Bool = false
+    /// Odd sizes are made even. Very small frames are kept, and the import note says so.
+    var dimensionsAdjusted: Bool = false
+}
+
+struct SourceWindow: Equatable, Codable {
+    var start: Double
+    var end: Double
+
+    var duration: Double { max(0, end - start) }
+
+    static func full(_ info: VideoInfo, limit: Double = 30) -> SourceWindow {
+        SourceWindow(start: 0, end: min(info.duration, limit))
+    }
+}
+
+enum JobStatus: Equatable {
+    case draft
+    case queued
+    case running
+    case done
+    case failed(String)
+    case cancelled
+}
+
+struct JobResult: Equatable {
+    var url: URL
+    var filename: String
+    var frameCount: Int
+    var fps: Double
+    var duration: Double
+    var fileSize: Int64
+    var elapsed: Double
+    var width: Int
+    var height: Int
+}
+
+struct ClipJob: Identifiable, Equatable {
+    var id: UUID = UUID()
+    var sourceURL: URL
+    var info: VideoInfo
+    var window: SourceWindow
+    var mode: WorkMode
+    var slow: SlowMoSettings
+    var interpolation: InterpolationSettings
+    var export: ExportSettings
+    var status: JobStatus = .draft
+    var result: JobResult? = nil
+    var thumbnailJPEG: Data? = nil
+    var note: String? = nil
+    var isFixture: Bool = false
+
+    var activeDuration: Double { window.duration }
+
+    var activeFrameCount: Int {
+        max(1, Int((activeDuration * info.fps).rounded()))
+    }
+}
+
+struct RecentItem: Identifiable, Equatable, Codable {
+    var id: UUID
+    var title: String
+    var subtitle: String
+    var durationLabel: String
+    var thumbnailJPEG: Data? = nil
+    var createdAt: Date
+}
+
+struct PipelineProgress: Equatable {
+    enum Phase: Equatable {
+        case analysis
+        case paused
+        case interpolation
+        case encoding
+        case finished
+    }
+
+    var phase: Phase = .analysis
+    var fraction: Double = 0
+    var frameIndex: Int = 0
+    var frameCount: Int = 0
+    var sourceFrames: Int = 0
+    var sceneCuts: Int = 0
+    var duplicates: Int = 0
+    var framesPerSecond: Double = 0
+    var eta: Double? = nil
+    var timestep: Float? = nil
+    var queueIndex: Int = 1
+    var queueCount: Int = 1
+    var detail: String = ""
+}
+

@@ -1,0 +1,16 @@
+.DS_Store
+build/
+DerivedData/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+*.mlpackage/
+*.mlmodelc/
+*.mlmodel
+tools/weights/*.zip
+tools/weights/*.pkl
+tools/weights/*.pth
+tools/weights/train_log/
+__pycache__/
+*.pyc
+.venv/

@@ -1,0 +1,299 @@
+name: iOS
+
+on:
+  push:
+    branches: [main, "cursor/**"]
+    tags: ["v*"]
+    paths-ignore:
+      - "docs/screenshots/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ipa:
+    runs-on: macos-15
+    timeout-minutes: 300
+    env:
+      # Underscores, not commas: actions/cache rejects a key that contains a comma,
+      # and GitHub expressions have no replace().
+      RIFE_SIZES: "256x384_384x256_384x640_640x384_512x896_896x512_768x1280_1280x768_1088x1920_1920x1088_2176x3840_3840x2176"
+      RIFE_MODELS: "rife425_rife426_rife426heavy_rife425lite_rife422"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache RIFE weights and Core ML packages
+        uses: actions/cache@v4
+        id: rife-cache
+        continue-on-error: true
+        with:
+          path: |
+            tools/weights
+            build/models
+          key: rife-models-${{ hashFiles('tools/rife425_net.py', 'tools/convert_rife425.py', 'tools/requirements.txt') }}-${{ env.RIFE_SIZES }}-${{ env.RIFE_MODELS }}
+
+      - name: Convert RIFE packages
+        if: steps.rife-cache.outputs.cache-hit != 'true'
+        run: |
+          python3 -m pip install -r tools/requirements.txt
+          python3 tools/convert_rife425.py --models "${RIFE_MODELS//_/,}" --sizes "${RIFE_SIZES//_/,}" --out build/models
+
+      - name: Compile Core ML packages
+        run: |
+          set -euo pipefail
+          mkdir -p EviiFrames/Resources/Models build/benchmark
+          if [ -f build/models/benchmark-macos.json ]; then
+            cp build/models/benchmark-macos.json build/benchmark/benchmark-macos.json
+          fi
+          shopt -s nullglob
+          found=0
+          for package in build/models/*.mlpackage; do
+            xcrun coremlcompiler compile "${package}" EviiFrames/Resources/Models
+            found=1
+          done
+          if [ "${found}" -ne 1 ]; then
+            echo "no mlpackage in build/models" >&2
+            exit 1
+          fi
+          find EviiFrames/Resources/Models -name '*.mlmodelc' -type d
+          test "$(find EviiFrames/Resources/Models -name '*.mlmodelc' -type d | wc -l | tr -d ' ')" -ge 60
+
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Pick an iPhone simulator
+        id: sim
+        run: |
+          python3 - << 'PY'
+          import json, subprocess
+          raw = subprocess.check_output(["xcrun", "simctl", "list", "devices", "available", "-j"])
+          data = json.loads(raw)
+          chosen = None
+          for runtime, devices in data.get("devices", {}).items():
+              if "iOS" not in runtime:
+                  continue
+              for device in devices:
+                  name = device.get("name", "")
+                  if not device.get("isAvailable") or "iPhone" not in name:
+                      continue
+                  rank = (1 if "Pro" not in name else 0, name)
+                  if chosen is None or rank > chosen[0]:
+                      chosen = (rank, device["udid"], name)
+          if not chosen:
+              raise SystemExit("no iPhone simulator")
+          print(f"udid={chosen[1]}")
+          print(f"name={chosen[2]}")
+          open("/tmp/sim.env", "w").write(f"UDID={chosen[1]}\nNAME={chosen[2]}\n")
+          PY
+          cat /tmp/sim.env >> "$GITHUB_ENV"
+
+      - name: Unit tests and simulator benchmark
+        id: unit
+        continue-on-error: true
+        run: |
+          set +e
+          set -o pipefail
+          mkdir -p build/benchmark
+          xcodebuild test \
+            -project EviiFrames.xcodeproj \
+            -scheme EviiFrames \
+            -destination "platform=iOS Simulator,id=${UDID}" \
+            -derivedDataPath build/DerivedData \
+            -only-testing:EviiFramesTests \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            ENABLE_DEBUG_DYLIB=NO \
+            | tee build/test.log
+          status=$?
+          echo "${status}" > build/unit-status.txt
+          grep EVII_BENCH build/test.log > build/benchmark/benchmark-simulator.txt || true
+          grep EVII_QA build/test.log > build/benchmark/qa.txt || true
+          echo "unit_exit=${status}"
+          exit "${status}"
+
+      - name: UI tests with simulator video
+        id: ui
+        if: always()
+        continue-on-error: true
+        run: |
+          set +e
+          mkdir -p build/videos build/benchmark
+          xcrun simctl boot "${UDID}" || true
+          xcrun simctl bootstatus "${UDID}" -b
+          xcrun simctl io "${UDID}" recordVideo --codec=h264 --force build/videos/ui-flows.mp4 >/tmp/evii-ui-record.log 2>&1 &
+          echo $! > /tmp/evii-ui-record.pid
+          set -o pipefail
+          xcodebuild test \
+            -project EviiFrames.xcodeproj \
+            -scheme EviiFrames \
+            -destination "platform=iOS Simulator,id=${UDID}" \
+            -derivedDataPath build/DerivedData \
+            -only-testing:EviiFramesUITests \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            ENABLE_DEBUG_DYLIB=NO \
+            | tee build/uitest.log
+          status=$?
+          echo "${status}" > build/ui-status.txt
+          if [ -f /tmp/evii-ui-record.pid ]; then
+            kill -INT "$(cat /tmp/evii-ui-record.pid)" 2>/dev/null || true
+            for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+              kill -0 "$(cat /tmp/evii-ui-record.pid)" 2>/dev/null || break
+              sleep 1
+            done
+            wait "$(cat /tmp/evii-ui-record.pid)" 2>/dev/null || true
+          fi
+          ls -lh build/videos || true
+          echo "ui_exit=${status}"
+          exit "${status}"
+
+      - name: Simulator screenshots
+        if: always()
+        run: |
+          APP="build/DerivedData/Build/Products/Debug-iphonesimulator/EviiFrames.app"
+          test -d "${APP}"
+          chmod +x ci/screenshots.sh
+          ci/screenshots.sh "${APP}" build/screenshots
+
+      - name: Unsigned IPA
+        if: always()
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -project EviiFrames.xcodeproj \
+            -scheme EviiFrames \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath build/EviiFrames.xcarchive \
+            -derivedDataPath build/ArchiveDerived \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            ENABLE_DEBUG_DYLIB=NO
+          APP="build/EviiFrames.xcarchive/Products/Applications/EviiFrames.app"
+          test -d "${APP}"
+          rm -rf build/Payload
+          mkdir -p build/Payload
+          cp -R "${APP}" build/Payload/EviiFrames.app
+          rm -f build/EviiFrames-0.1.1-unsigned.ipa
+          (cd build && zip -qry EviiFrames-0.1.1-unsigned.ipa Payload)
+          ls -lh build/EviiFrames-0.1.1-unsigned.ipa
+          unzip -l build/EviiFrames-0.1.1-unsigned.ipa | head
+          # The phone letterboxes the app without UILaunchScreen. Check the shipped plist.
+          unzip -p build/EviiFrames-0.1.1-unsigned.ipa Payload/EviiFrames.app/Info.plist > build/Info.plist
+          plutil -p build/Info.plist
+          plutil -extract UILaunchScreen xml1 -o - build/Info.plist
+          plutil -extract UISupportedInterfaceOrientations xml1 -o - build/Info.plist
+          plutil -extract NSPhotoLibraryAddUsageDescription raw -o - build/Info.plist
+
+      - name: Simulator app for Appetize
+        if: always()
+        run: |
+          set +e
+          mkdir -p build/simulator
+          xcodebuild build \
+            -project EviiFrames.xcodeproj \
+            -scheme EviiFrames \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "generic/platform=iOS Simulator" \
+            -derivedDataPath build/SimDerived \
+            ARCHS="arm64 x86_64" \
+            ONLY_ACTIVE_ARCH=NO \
+            "EXCLUDED_ARCHS=" \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            ENABLE_DEBUG_DYLIB=NO
+          fat=$?
+          if [ "${fat}" -ne 0 ]; then
+            echo "universal simulator build failed; keeping arm64" | tee build/simulator/ARCH.txt
+            xcodebuild build \
+              -project EviiFrames.xcodeproj \
+              -scheme EviiFrames \
+              -configuration Debug \
+              -sdk iphonesimulator \
+              -destination "generic/platform=iOS Simulator" \
+              -derivedDataPath build/SimDerived \
+              ARCHS=arm64 \
+              ONLY_ACTIVE_ARCH=NO \
+              CODE_SIGNING_ALLOWED=YES \
+              CODE_SIGN_IDENTITY="-" \
+              CODE_SIGNING_REQUIRED=NO \
+              ENABLE_DEBUG_DYLIB=NO
+            if [ "$?" -ne 0 ]; then
+              echo "simulator build failed" | tee -a build/simulator/ARCH.txt
+              exit 1
+            fi
+          fi
+          APP="$(find build/SimDerived/Build/Products -type d -name EviiFrames.app -path '*iphonesimulator*' | head -n 1)"
+          if [ -z "${APP}" ] || [ ! -d "${APP}" ]; then
+            echo "simulator .app was not produced" | tee build/simulator/ARCH.txt
+            exit 1
+          fi
+          lipo -info "${APP}/EviiFrames" | tee build/simulator/ARCH.txt
+          ditto -c -k --keepParent "${APP}" build/simulator/EviiFrames-0.1.1-simulator.zip
+          ls -lh build/simulator/EviiFrames-0.1.1-simulator.zip
+          unzip -l build/simulator/EviiFrames-0.1.1-simulator.zip | head
+
+      - name: Upload IPA, screenshots, timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evii-frames-0.1.1
+          if-no-files-found: warn
+          path: |
+            build/EviiFrames-0.1.1-unsigned.ipa
+            build/screenshots
+            build/videos
+            build/simulator
+            build/benchmark
+            build/test.log
+            build/uitest.log
+            build/unit-status.txt
+            build/ui-status.txt
+            build/Info.plist
+
+      - name: Require passing tests and the IPA
+        if: always()
+        run: |
+          set -euo pipefail
+          unit="$(cat build/unit-status.txt 2>/dev/null || echo missing)"
+          ui="$(cat build/ui-status.txt 2>/dev/null || echo missing)"
+          echo "unit_exit=${unit} ui_exit=${ui} unit_outcome=${{ steps.unit.outcome }} ui_outcome=${{ steps.ui.outcome }}"
+          test -f build/EviiFrames-0.1.1-unsigned.ipa
+          test "${unit}" = "0"
+          test "${ui}" = "0"
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: ipa
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: evii-frames-0.1.1
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/EviiFrames-0.1.1-unsigned.ipa
+          fail_on_unmatched_files: true
+          generate_release_notes: true
