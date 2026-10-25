@@ -6,7 +6,7 @@ The app runs [Practical-RIFE](https://github.com/hzwer/Practical-RIFE) 4.25 (MIT
 
 `coremltools` 9 cannot convert this graph with a flexible or enumerated shape. The bilinear upsample is traced with a float output size (`recompute_scale_factor = False, align_corners = False with float output size is not supported`). iOS 17 also allows only one enumerated input. Fixed traces avoid both limits.
 
-Each height and width is a multiple of 64. That matches scale list `16, 8, 4, 2, 1` plus the block's own stride-2. The Swift side pads with edge replication into the smallest package that contains the frame, then crops back. 4K is scaled into `1088×1920` or `1920×1088`.
+Each height and width is a multiple of 64. That matches scale list `16, 8, 4, 2, 1` plus the block's own stride-2. The Swift side pads with edge replication into the smallest package that contains the frame, then crops back. The largest packages are `1088×1920` and `1920×1088`. That is the 1080p working set for an iPhone 14 Pro (A16, 6 GB). 4K is scaled into those packages and is not converted as its own shape.
 
 `--uhd` traces the official half-resolution pyramid (`32, 16, 8, 4, 2`). v0.1 does not ship that graph. The UHD switch in the app only records the choice.
 

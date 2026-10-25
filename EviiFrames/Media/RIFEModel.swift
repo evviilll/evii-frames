@@ -54,12 +54,15 @@ final class RIFEModel {
     init(url: URL, height: Int, width: Int) throws {
         self.height = height
         self.width = width
-        let units: [MLComputeUnits] = [.all, .cpuAndGPU, .cpuOnly]
+        // A16 Neural Engine, 6 GB. Prefer the ANE without also reserving the GPU.
+        // `.all` is the fallback when an op (grid_sample) is rejected by the ANE.
+        let units: [MLComputeUnits] = [.cpuAndNeuralEngine, .all, .cpuAndGPU, .cpuOnly]
         var last: Error = PipelineError.modelMissing(url.lastPathComponent)
         var loaded: (MLModel, String)?
         for unit in units {
             let config = MLModelConfiguration()
             config.computeUnits = unit
+            config.allowLowPrecisionAccumulationOnGPU = true
             do {
                 let model = try MLModel(contentsOf: url, configuration: config)
                 loaded = (model, label(unit))

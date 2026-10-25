@@ -20,7 +20,9 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 120
     env:
-      RIFE_SIZES: "256x384,384x256,384x640,640x384,768x1280,1280x768,1088x1920,1920x1088"
+      # Underscores, not commas: actions/cache rejects a key that contains a comma,
+      # and GitHub expressions have no replace().
+      RIFE_SIZES: "256x384_384x256_384x640_640x384_768x1280_1280x768_1088x1920_1920x1088"
     steps:
       - uses: actions/checkout@v4
 
@@ -35,14 +37,14 @@ jobs:
           path: |
             tools/weights
             build/models
-          key: rife425-${{ hashFiles('tools/rife425_net.py', 'tools/convert_rife425.py', 'tools/requirements.txt') }}-${{ replace(env.RIFE_SIZES, ',', '_') }}
+          key: rife425-${{ hashFiles('tools/rife425_net.py', 'tools/convert_rife425.py', 'tools/requirements.txt') }}-${{ env.RIFE_SIZES }}
 
       - name: Convert RIFE 4.25
         if: steps.rife-cache.outputs.cache-hit != 'true'
         run: |
           python3 -m pip install -r tools/requirements.txt
           python3 tools/convert_rife425.py --check-only
-          python3 tools/convert_rife425.py --sizes "${RIFE_SIZES}" --out build/models
+          python3 tools/convert_rife425.py --sizes "${RIFE_SIZES//_/,}" --out build/models
 
       - name: Compile Core ML packages
         run: |

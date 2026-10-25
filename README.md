@@ -23,8 +23,14 @@ Clips are limited to 30 seconds. Typical clips are 1–2 seconds, so the default
 ## What is stubbed
 
 - **RIFE lite** is a visible option and is not selectable as an engine. Start uses RIFE 4.25. TODO: a smaller traced package.
-- **Apple VTFrameRateConversion** is a visible option for iOS 26. `AppleFrameRate.isRuntimeSupported` is `false`. The SDK symbol is not referenced. TODO: call it only when `isSupported` is true.
+- **Apple VTFrameRateConversion** is used only when `VTFrameRateConversionConfiguration.isSupported` is true on that phone. The check is a runtime lookup, so an older SDK still links, and an iPhone 14 Pro on iOS 27 is not assumed to support it. v0.1 does not open a `VTFrameProcessor` session even when the flag is true; start keeps RIFE 4.25.
 - **UHD** stores the toggle. The official scale-0.5 pyramid is not in the app. `tools/convert_rife425.py --uhd` can trace it; v0.1 does not bundle it. 4K is scaled into the 1080p package.
+
+## iPhone 14 Pro
+
+The phone this build is aimed at is an iPhone 14 Pro: A16 Bionic, 6 GB of RAM, iOS 27. The deployment target stays iOS 17, `MinimumOSVersion` is 17.0, and there is no maximum system version, so iOS 27 can install it. `UIRequiredDeviceCapabilities` is `arm64`.
+
+The default max resolution is 1080p. Packages stop at 1088×1920 and 1920×1088. Core ML is FP16 and tries the Neural Engine first (`cpuAndNeuralEngine`), then `.all`, the GPU, and the CPU. A 4K activation is not loaded.
 - **FP32** stores the toggle. The shipped packages are FP16.
 - The before/after control compares the poster still with the latest generated frame. It does not play the file at 0.25×. Playback is in Photos.
 - Scene detection and dedup run on a 96×96 CPU luma plane (fast grid 8, accurate grid 24), not a Metal kernel.

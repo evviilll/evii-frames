@@ -96,6 +96,9 @@ struct ExportView: View {
                         }
                     }
                 }
+                Text("За замовчуванням 1080p. На iPhone 14 Pro (A16, 6 ГБ) 4K зменшується до пакета 1088×1920.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(theme.secondary)
 
                 EviiCard {
                     VStack(alignment: .leading, spacing: 16) {

@@ -22,7 +22,13 @@ struct SettingsView: View {
                         Text("Кліпи до 30 секунд. Інтерполяція на цьому iPhone, без хмари. Назва тимчасова.")
                             .font(.system(size: 14))
                             .foregroundStyle(theme.secondary)
-                        Text("Модель за замовчуванням — RIFE 4.25 (MIT, Practical-RIFE). RIFE lite і Apple VTFrameRateConversion показані в списку і вимкнені: TODO, коли з’явиться збірка і SDK iOS 26.")
+                        Text("Цільовий телефон — iPhone 14 Pro, A16, 6 ГБ, iOS 27. Мінімальна версія застосунку — iOS 17, верхньої межі немає. Вихід за замовчуванням — 1080p, модель FP16, спочатку Neural Engine.")
+                            .font(.system(size: 14))
+                            .foregroundStyle(theme.secondary)
+                        Text(appleNote)
+                            .font(.system(size: 14))
+                            .foregroundStyle(theme.secondary)
+                        Text("Модель за замовчуванням — RIFE 4.25 (MIT, Practical-RIFE), FP16. RIFE lite не зібрана.")
                             .font(.system(size: 14))
                             .foregroundStyle(theme.secondary)
                         Text(model.proResAvailable ? "ProRes на цьому пристрої доступний." : "ProRes тут недоступний — лишаються HEVC і H.264.")
@@ -53,5 +59,12 @@ struct SettingsView: View {
         }
         .background(theme.bg.ignoresSafeArea())
         .toolbar(.hidden, for: .navigationBar)
+    }
+
+    private var appleNote: String {
+        if AppleFrameRate.isRuntimeSupported {
+            return "VTFrameRateConversion isSupported на цьому iPhone. Сесію процесора v0.1 ще не відкриває."
+        }
+        return "VTFrameRateConversion на цьому пристрої: isSupported == false. Застосунок його не викликає."
     }
 }

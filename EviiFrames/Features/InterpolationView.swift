@@ -271,7 +271,10 @@ struct InterpolationSettingsView: View {
         case .rifeLite:
             return "RIFE lite ще не зібрана. Старт візьме RIFE 4.25."
         case .apple:
-            return "Apple — лише iOS 26, якщо пристрій підтримує. У v0.1 шлях не зібраний, старт візьме RIFE 4.25."
+            if AppleFrameRate.isRuntimeSupported {
+                return "isSupported == true. Сесію VTFrameProcessor v0.1 ще не відкриває, старт візьме RIFE 4.25."
+            }
+            return "isSupported == false на цьому iPhone. Старт візьме RIFE 4.25."
         }
     }
 

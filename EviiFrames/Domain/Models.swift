@@ -22,11 +22,13 @@ enum ModelChoice: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    /// RIFE lite and Apple FRC are visible but not runnable in v0.1.
+    /// RIFE lite has no package. Apple FRC runs only when this phone's
+    /// VideoToolbox says `isSupported` — an iPhone 14 Pro on iOS 27 is not assumed.
     var engineAvailable: Bool {
         switch self {
         case .rife425: return true
-        case .rifeLite, .apple: return false
+        case .rifeLite: return false
+        case .apple: return AppleFrameRate.isRuntimeSupported
         }
     }
 }
@@ -219,7 +221,10 @@ struct ExportSettings: Equatable, Codable {
     var quality: Double = 75
     var container: ContainerChoice = .mov
     var maxFPS: MaxFPSChoice = .none
-    var maxResolution: MaxResolution = .original
+    /// 1080p is the default because the target phone is an iPhone 14 Pro:
+    /// A16, 6 GB. A 4K RIFE activation does not fit that budget. The 4K
+    /// choice still scales into the 1088×1920 package.
+    var maxResolution: MaxResolution = .p1080
     var keepAudio: Bool = true
     var keepMetadata: Bool = true
     var minimumDuration: Double? = nil
@@ -334,8 +339,3 @@ struct PipelineProgress: Equatable {
     var detail: String = ""
 }
 
-enum AppleFrameRate {
-    /// v0.1 does not call VTFrameRateConversion. The control stays in the UI
-    /// with the iOS 26 caption until a build against that SDK implements it.
-    static var isRuntimeSupported: Bool { false }
-}

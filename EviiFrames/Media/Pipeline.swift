@@ -69,8 +69,17 @@ final class VideoPipeline {
         if job.interpolation.preferFP32 {
             callbacks.log("FP32: зібрана модель — FP16. Перемикач у v0.1 не змінює ваги.")
         }
-        if job.interpolation.model != .rife425 {
-            callbacks.log("\(job.interpolation.model.title) ще не підключена. Беру RIFE 4.25.")
+        switch job.interpolation.model {
+        case .rife425:
+            break
+        case .rifeLite:
+            callbacks.log("RIFE lite ще не зібрана. Беру RIFE 4.25.")
+        case .apple:
+            if AppleFrameRate.isRuntimeSupported {
+                callbacks.log("VTFrameRateConversion isSupported. Сесію VTFrameProcessor у v0.1 не відкриваю, беру RIFE 4.25.")
+            } else {
+                callbacks.log("VTFrameRateConversion isSupported == false на цьому пристрої. Беру RIFE 4.25.")
+            }
         }
 
         let bucket = Geometry.bucket(width: outputSize.width, height: outputSize.height)
