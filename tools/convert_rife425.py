@@ -134,10 +134,14 @@ def convert_one(net: torch.nn.Module, height: int, width: int, out_dir: Path, uh
     traced = torch.jit.trace(net, (example0, example1, timestep))
     print(f"convert {height}x{width}")
     started = time.perf_counter()
-    # Float32 interface, FP16 compute. Leaving dtype unset makes coremltools 9
-    # publish FLOAT16 inputs, and a float32 buffer is then read as half-precision bits.
-    # Swift feeds MLMultiArray float32.
+    # Float32 interface. Convs are FP16 so a 1080p frame fits an iPhone 14 Pro
+    # (6 GB). resample stays FP32: an FP16 grid_sample does not match PyTorch
+    # (t=0.5 mean abs 0.19 on CPU, GPU, and the Neural Engine alike).
     float32 = np.float32
+
+    def fp16_selector(op) -> bool:
+        return op.op_type != "resample"
+
     model = ct.convert(
         traced,
         inputs=[
@@ -147,7 +151,7 @@ def convert_one(net: torch.nn.Module, height: int, width: int, out_dir: Path, uh
         ],
         outputs=[ct.TensorType(name="output", dtype=float32)],
         convert_to="mlprogram",
-        compute_precision=ct.precision.FLOAT16,
+        compute_precision=ct.transform.FP16ComputePrecision(op_selector=fp16_selector),
         minimum_deployment_target=ct.target.iOS17,
     )
     tag = "UHD" if uhd else "RIFE425"
@@ -159,7 +163,7 @@ def convert_one(net: torch.nn.Module, height: int, width: int, out_dir: Path, uh
         "height": height,
         "width": width,
         "seconds_convert": round(elapsed, 3),
-        "compute_precision": "fp16",
+        "compute_precision": "fp16-conv-fp32-resample",
         "deployment_target": "iOS17",
     }
     if platform.system() == "Darwin" and height * width <= 256 * 384:

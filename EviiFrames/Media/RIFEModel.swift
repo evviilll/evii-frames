@@ -54,10 +54,9 @@ final class RIFEModel {
     init(url: URL, height: Int, width: Int) throws {
         self.height = height
         self.width = width
-        // resample (grid_sample) on the Mac's ALL units, which includes the Neural
-        // Engine, did not match PyTorch at t=0.5. GPU+CPU is the first choice on
-        // the A16. The Neural Engine is only used if the others refuse to load.
-        let units: [MLComputeUnits] = [.cpuAndGPU, .cpuOnly, .all, .cpuAndNeuralEngine]
+        // A16, 6 GB. The warp itself is FP32 inside the package; the convolutions
+        // are FP16. Neural Engine first, then GPU, then CPU.
+        let units: [MLComputeUnits] = [.cpuAndNeuralEngine, .cpuAndGPU, .all, .cpuOnly]
         var last: Error = PipelineError.modelMissing(url.lastPathComponent)
         var loaded: (MLModel, String)?
         for unit in units {
