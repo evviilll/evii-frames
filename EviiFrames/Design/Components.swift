@@ -116,6 +116,7 @@ struct PillChoice: View {
             )
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier(title)
     }
 }
 

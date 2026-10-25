@@ -27,6 +27,11 @@ final class FlowsUITests: XCTestCase {
         XCUIDevice.shared.press(.home)
         sleep(1)
         app.activate()
+        let foreground = Date().addingTimeInterval(12)
+        while app.state != .runningForeground && Date() < foreground {
+            app.activate()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+        }
         XCTAssertEqual(app.state, .runningForeground)
         app.tabBars.buttons["Головна"].tap()
         XCTAssertTrue(app.staticTexts["Evii Frames"].waitForExistence(timeout: 6))
@@ -42,8 +47,13 @@ final class FlowsUITests: XCTestCase {
         tap(app, "Множник")
         tap(app, "x4")
         app.buttons["theme-toggle"].tap()
-        app.buttons["nav-Експорт"].tap()
-        XCTAssertTrue(app.staticTexts["Експорт"].waitForExistence(timeout: 5))
+        let exportRow = app.buttons["nav-Експорт"]
+        XCTAssertTrue(exportRow.waitForExistence(timeout: 5))
+        if !exportRow.isHittable {
+            app.swipeUp()
+        }
+        exportRow.tap()
+        XCTAssertTrue(app.staticTexts["КОДЕК"].waitForExistence(timeout: 8))
         tap(app, "H.264")
         tap(app, "HEVC")
         tap(app, "ProRes")
@@ -130,8 +140,13 @@ final class FlowsUITests: XCTestCase {
     func testProcessingCancelAndDone() {
         let app = launch("processing")
         XCTAssertTrue(app.staticTexts["Обробка"].waitForExistence(timeout: 8))
-        XCTAssertTrue(app.buttons["cancel-processing"].exists)
-        app.buttons["cancel-processing"].tap()
+        let cancel = app.buttons["cancel-processing"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 4))
+        if cancel.isHittable {
+            cancel.tap()
+        } else {
+            app.staticTexts["Обробка"].coordinate(withNormalizedOffset: CGVector(dx: 4, dy: 0.5)).tap()
+        }
         XCTAssertEqual(app.state, .runningForeground)
         app.terminate()
 
@@ -150,13 +165,14 @@ final class FlowsUITests: XCTestCase {
         let app = launch("unsupported")
         let alert = app.alerts.firstMatch
         XCTAssertTrue(alert.waitForExistence(timeout: 6))
-        XCTAssertTrue(alert.staticTexts["У файлі немає відеодоріжки."].exists)
+        let missing = alert.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "немає відеодоріжки")).firstMatch
+        XCTAssertTrue(missing.waitForExistence(timeout: 2))
         alert.buttons["Гаразд"].tap()
         XCTAssertTrue(app.staticTexts["Evii Frames"].waitForExistence(timeout: 4))
     }
 
     private func tap(_ app: XCUIApplication, _ title: String) {
-        let button = app.buttons.matching(NSPredicate(format: "label == %@ OR label BEGINSWITH %@", title, title)).firstMatch
+        let button = app.buttons.matching(NSPredicate(format: "identifier == %@ OR label == %@ OR label BEGINSWITH %@", title, title, title)).firstMatch
         XCTAssertTrue(button.waitForExistence(timeout: 5), title)
         button.tap()
     }

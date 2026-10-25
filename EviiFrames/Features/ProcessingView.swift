@@ -99,6 +99,8 @@ struct ProcessingView: View {
                 .frame(maxWidth: .infinity)
         }
         .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .safeAreaPadding(.top, 4)
         .background(theme.bg.ignoresSafeArea())
     }
 

@@ -96,21 +96,29 @@ enum ClipFactory {
             }
         }
         guard writer.startWriting() else {
-            throw ClipFactoryError.message(writer.error?.localizedDescription ?? "startWriting")
+            writer.cancelWriting()
+            throw ClipFactoryError.message(writerDetail(writer, fallback: "startWriting"))
+        }
+        var completed = false
+        defer {
+            if !completed { writer.cancelWriting() }
         }
         writer.startSession(atSourceTime: .zero)
-        guard let buffer = makeBuffer(width: spec.width, height: spec.height) else {
-            throw ClipFactoryError.message("CVPixelBuffer")
+        guard let pool = makePool(width: spec.width, height: spec.height) else {
+            throw ClipFactoryError.message("CVPixelBufferPool")
         }
         let looks = appearances(spec)
         var cursor = 0.0
         for index in 0..<spec.frames {
             try waitReady(video, writer: writer)
+            guard let buffer = take(pool) else {
+                throw ClipFactoryError.message("CVPixelBuffer")
+            }
             let look = looks[index]
             fill(buffer, luma: look.luma, barX: look.bar)
             let pts = CMTime(seconds: cursor, preferredTimescale: 60_000)
             if !adaptor.append(buffer, withPresentationTime: pts) {
-                throw ClipFactoryError.message(writer.error?.localizedDescription ?? "append \(index)")
+                throw ClipFactoryError.message(writerDetail(writer, fallback: "append \(index)"))
             }
             cursor += gap(spec, index: index)
             if spec.frames > 200, index % 300 == 0 {
@@ -125,6 +133,7 @@ enum ClipFactory {
         writer.endSession(atSourceTime: CMTime(seconds: max(cursor, 0.01), preferredTimescale: 60_000))
         let timeout = spec.frames > 200 ? 300.0 : 60.0
         try finish(writer, timeout: timeout)
+        completed = true
         return url
     }
 
@@ -141,11 +150,19 @@ enum ClipFactory {
         audio.expectsMediaDataInRealTime = false
         guard writer.canAdd(audio) else { throw ClipFactoryError.message("audio") }
         writer.add(audio)
-        guard writer.startWriting() else { throw ClipFactoryError.message(writer.error?.localizedDescription ?? "audio start") }
+        guard writer.startWriting() else {
+            writer.cancelWriting()
+            throw ClipFactoryError.message(writerDetail(writer, fallback: "audio start"))
+        }
+        var completed = false
+        defer {
+            if !completed { writer.cancelWriting() }
+        }
         writer.startSession(atSourceTime: .zero)
         try writeTone(audio, duration: 0.4, writer: writer)
         audio.markAsFinished()
         try finish(writer, timeout: 30)
+        completed = true
         return url
     }
 
@@ -183,19 +200,26 @@ enum ClipFactory {
         return index % 4 == 3 ? 0.12 : 0.008
     }
 
-    private static func makeBuffer(width: Int, height: Int) -> CVPixelBuffer? {
+    private static func writerDetail(_ writer: AVAssetWriter, fallback: String) -> String {
+        guard let error = writer.error as NSError? else { return "\(fallback) status=\(writer.status.rawValue)" }
+        return "\(error.localizedDescription) [\(error.domain) \(error.code)]"
+    }
+
+    private static func makePool(width: Int, height: Int) -> CVPixelBufferPool? {
+        let attrs: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: width,
+            kCVPixelBufferHeightKey as String: height,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:],
+        ]
+        var pool: CVPixelBufferPool?
+        let status = CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attrs as CFDictionary, &pool)
+        return status == kCVReturnSuccess ? pool : nil
+    }
+
+    private static func take(_ pool: CVPixelBufferPool) -> CVPixelBuffer? {
         var buffer: CVPixelBuffer?
-        let status = CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            width,
-            height,
-            kCVPixelFormatType_32BGRA,
-            [
-                kCVPixelBufferCGImageCompatibilityKey: true,
-                kCVPixelBufferCGBitmapContextCompatibilityKey: true,
-            ] as CFDictionary,
-            &buffer
-        )
+        let status = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &buffer)
         return status == kCVReturnSuccess ? buffer : nil
     }
 
@@ -231,7 +255,7 @@ enum ClipFactory {
         while !input.isReadyForMoreMediaData {
             spins += 1
             if spins > 5000 || writer.status == .failed {
-                throw ClipFactoryError.message(writer.error?.localizedDescription ?? "кодер не встигає")
+                throw ClipFactoryError.message(writerDetail(writer, fallback: "кодер не встигає"))
             }
             RunLoop.current.run(until: Date().addingTimeInterval(0.002))
         }

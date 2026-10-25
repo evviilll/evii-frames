@@ -49,6 +49,14 @@ enum EncoderSupport {
             AVVideoWidthKey: 64,
             AVVideoHeightKey: 64,
         ])
-        return writer.canAdd(input)
+        guard writer.canAdd(input) else { return false }
+        writer.add(input)
+        // canAdd is true for ProRes on the simulator, and startWriting then fails.
+        guard writer.startWriting() else {
+            writer.cancelWriting()
+            return false
+        }
+        writer.cancelWriting()
+        return true
     }
 }

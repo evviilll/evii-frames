@@ -151,7 +151,13 @@ final class VideoPipeline {
         let pcm = audioPlan == .rebuild ? await decodePCM(job: job, callbacks: callbacks) : []
         let writer = try makeWriter(job: job, url: outputURL, size: outputSize, fps: plan.outputFPS, audio: audioPlan)
         guard writer.writer.startWriting() else {
-            throw PipelineError.writer(writer.writer.error?.localizedDescription ?? "AVAssetWriter")
+            let reason = writer.writer.error?.localizedDescription ?? "AVAssetWriter"
+            writer.writer.cancelWriting()
+            throw PipelineError.writer(reason)
+        }
+        var sealed = false
+        defer {
+            if !sealed { writer.writer.cancelWriting() }
         }
         writer.writer.startSession(atSourceTime: .zero)
         if audioPlan == .passthrough {
@@ -241,7 +247,8 @@ final class VideoPipeline {
         writer.video.markAsFinished()
         writer.audio?.markAsFinished()
         await writer.writer.finishWriting()
-        if writer.writer.status != .completed {
+        sealed = writer.writer.status == .completed
+        if !sealed {
             throw PipelineError.writer(writer.writer.error?.localizedDescription ?? "finishWriting")
         }
         let bytes = (try? FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? NSNumber)?.int64Value ?? 0
@@ -410,14 +417,22 @@ final class VideoPipeline {
     }
 
     private func append(_ buffer: CVPixelBuffer, at seconds: Double, writer: WriterBox) async throws {
+        let width = CVPixelBufferGetWidth(buffer)
+        let height = CVPixelBufferGetHeight(buffer)
+        guard let owned = PixelBuffers.make(width: width, height: height) else {
+            throw PipelineError.writer("Кадр")
+        }
+        PixelBuffers.copy(buffer, into: owned)
         let time = CMTime(seconds: max(0, seconds), preferredTimescale: 60_000)
         var spins = 0
         while !writer.video.isReadyForMoreMediaData {
             spins += 1
-            if spins > 3000 { throw PipelineError.writer("Кодер не встигає") }
+            if spins > 3000 || writer.writer.status == .failed {
+                throw PipelineError.writer(writer.writer.error?.localizedDescription ?? "Кодер не встигає")
+            }
             try await Task.sleep(nanoseconds: 10_000_000)
         }
-        if !writer.adaptor.append(buffer, withPresentationTime: time) {
+        if !writer.adaptor.append(owned, withPresentationTime: time) {
             throw PipelineError.writer(writer.writer.error?.localizedDescription ?? "append")
         }
     }
