@@ -173,6 +173,9 @@ struct NavRow: View {
                     .foregroundStyle(theme.tertiary)
             }
             .padding(.vertical, 6)
+            // The spacer between the title and the value does not hit-test.
+            // A tap in the middle of the row used to fall through to the card.
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("nav-\(title)")

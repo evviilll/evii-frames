@@ -51,8 +51,7 @@ final class FlowsUITests: XCTestCase {
         // The row sits over the tab bar on a short phone. A tap there hits the bar
         // and never pushes Export, so «КОДЕК» never appears.
         bringOnScreen(app, exportRow, bottomClearance: 56)
-        // The center of a row that still overlaps the tab bar hits the bar.
-        exportRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+        exportRow.tap()
         XCTAssertTrue(
             app.buttons["H.264"].waitForExistence(timeout: 8),
             "Експорт не відкрився row \(exportRow.frame) screen \(screenBounds(app))"
