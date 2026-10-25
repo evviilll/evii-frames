@@ -24,6 +24,10 @@ final class PipelineQATests: XCTestCase {
         try await expectInterpolation(frames: 8, fps: 30, multiplier: 8, maxFPS: 120, audio: false, name: "cap120")
     }
 
+    func testMaximumQualityKeepsThePlan() async throws {
+        try await expectInterpolation(frames: 8, fps: 30, multiplier: 2, audio: false, name: "tta", maximumQuality: true)
+    }
+
     func testOneAndTwoSecondClips() async throws {
         try await expectInterpolation(frames: 30, fps: 30, multiplier: 2, audio: true, name: "one-second")
         try await expectInterpolation(frames: 60, fps: 30, multiplier: 2, audio: false, name: "two-second")
@@ -323,7 +327,8 @@ final class PipelineQATests: XCTestCase {
         targetFPS: Double? = nil,
         maxFPS: Double? = nil,
         audio: Bool,
-        name: String
+        name: String,
+        maximumQuality: Bool = false
     ) async throws {
         let url = try ClipFactory.write(ClipFactory.Spec(frames: frames, fps: fps, width: width, height: height, audio: audio, name: name))
         defer { try? FileManager.default.removeItem(at: url) }
@@ -339,6 +344,7 @@ final class PipelineQATests: XCTestCase {
                 $0.export.maxFPS = maxFPS >= 240 ? .p240 : (maxFPS >= 120 ? .p120 : .p60)
             }
             $0.export.keepAudio = audio
+            $0.interpolation.maximumQuality = maximumQuality
         }
         let read = try await yielded(job)
         XCTAssertEqual(read, frames, "\(name) FrameSource")

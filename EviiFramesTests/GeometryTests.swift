@@ -35,8 +35,27 @@ final class GeometryTests: XCTestCase {
         XCTAssertEqual(small.w, 640)
 
         let uhd = Geometry.bucket(width: 3840, height: 2160)
-        XCTAssertEqual(uhd.h, 1088)
-        XCTAssertEqual(uhd.w, 1920)
-        XCTAssertEqual(uhd.scale, 0.5, accuracy: 0.01)
+        XCTAssertEqual(uhd.h, 2176)
+        XCTAssertEqual(uhd.w, 3840)
+        XCTAssertEqual(uhd.scale, 1, accuracy: 1e-9)
+
+        let portrait4k = Geometry.bucket(width: 2160, height: 3840)
+        XCTAssertEqual(portrait4k.h, 3840)
+        XCTAssertEqual(portrait4k.w, 2176)
+        XCTAssertEqual(portrait4k.scale, 1, accuracy: 1e-9)
+    }
+
+    func testPackagePrefixesDoNotCollapse() {
+        let lite = RIFEModel.parsePackageName("RIFE425L_256x384")
+        XCTAssertEqual(lite?.prefix, "RIFE425L")
+        XCTAssertEqual(lite?.h, 256)
+        XCTAssertEqual(lite?.w, 384)
+        let heavy = RIFEModel.parsePackageName("RIFE426H_3840x2176")
+        XCTAssertEqual(heavy?.prefix, "RIFE426H")
+        XCTAssertEqual(heavy?.h, 3840)
+        XCTAssertEqual(heavy?.w, 2176)
+        let base = RIFEModel.parsePackageName("RIFE425_1088x1920")
+        XCTAssertEqual(base?.prefix, "RIFE425")
+        XCTAssertNil(RIFEModel.parsePackageName("UHD_256x384"))
     }
 }

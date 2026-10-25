@@ -18,11 +18,12 @@ permissions:
 jobs:
   ipa:
     runs-on: macos-15
-    timeout-minutes: 120
+    timeout-minutes: 300
     env:
       # Underscores, not commas: actions/cache rejects a key that contains a comma,
       # and GitHub expressions have no replace().
-      RIFE_SIZES: "256x384_384x256_384x640_640x384_768x1280_1280x768_1088x1920_1920x1088"
+      RIFE_SIZES: "256x384_384x256_384x640_640x384_512x896_896x512_768x1280_1280x768_1088x1920_1920x1088_2176x3840_3840x2176"
+      RIFE_MODELS: "rife425_rife426_rife426heavy_rife425lite_rife422"
     steps:
       - uses: actions/checkout@v4
 
@@ -33,18 +34,18 @@ jobs:
       - name: Cache RIFE weights and Core ML packages
         uses: actions/cache@v4
         id: rife-cache
+        continue-on-error: true
         with:
           path: |
             tools/weights
             build/models
-          key: rife425-${{ hashFiles('tools/rife425_net.py', 'tools/convert_rife425.py', 'tools/requirements.txt') }}-${{ env.RIFE_SIZES }}
+          key: rife-models-${{ hashFiles('tools/rife425_net.py', 'tools/convert_rife425.py', 'tools/requirements.txt') }}-${{ env.RIFE_SIZES }}-${{ env.RIFE_MODELS }}
 
-      - name: Convert RIFE 4.25
+      - name: Convert RIFE packages
         if: steps.rife-cache.outputs.cache-hit != 'true'
         run: |
           python3 -m pip install -r tools/requirements.txt
-          python3 tools/convert_rife425.py --check-only
-          python3 tools/convert_rife425.py --sizes "${RIFE_SIZES//_/,}" --out build/models
+          python3 tools/convert_rife425.py --models "${RIFE_MODELS//_/,}" --sizes "${RIFE_SIZES//_/,}" --out build/models
 
       - name: Compile Core ML packages
         run: |
@@ -63,7 +64,8 @@ jobs:
             echo "no mlpackage in build/models" >&2
             exit 1
           fi
-          find EviiFrames/Resources/Models -name 'RIFE425_*.mlmodelc' -type d
+          find EviiFrames/Resources/Models -name '*.mlmodelc' -type d
+          test "$(find EviiFrames/Resources/Models -name '*.mlmodelc' -type d | wc -l | tr -d ' ')" -ge 60
 
       - name: Generate Xcode project
         run: |
@@ -180,9 +182,9 @@ jobs:
           rm -rf build/Payload
           mkdir -p build/Payload
           cp -R "${APP}" build/Payload/EviiFrames.app
-          rm -f build/EviiFrames-0.1.0-unsigned.ipa
-          (cd build && zip -qry EviiFrames-0.1.0-unsigned.ipa Payload)
-          unzip -l build/EviiFrames-0.1.0-unsigned.ipa | head
+          rm -f build/EviiFrames-0.1.1-unsigned.ipa
+          (cd build && zip -qry EviiFrames-0.1.1-unsigned.ipa Payload)
+          unzip -l build/EviiFrames-0.1.1-unsigned.ipa | head
 
       - name: Simulator app for Appetize
         if: always()
@@ -230,18 +232,18 @@ jobs:
             exit 1
           fi
           lipo -info "${APP}/EviiFrames" | tee build/simulator/ARCH.txt
-          ditto -c -k --keepParent "${APP}" build/simulator/EviiFrames-0.1.0-simulator.zip
-          ls -lh build/simulator/EviiFrames-0.1.0-simulator.zip
-          unzip -l build/simulator/EviiFrames-0.1.0-simulator.zip | head
+          ditto -c -k --keepParent "${APP}" build/simulator/EviiFrames-0.1.1-simulator.zip
+          ls -lh build/simulator/EviiFrames-0.1.1-simulator.zip
+          unzip -l build/simulator/EviiFrames-0.1.1-simulator.zip | head
 
       - name: Upload IPA, screenshots, timings
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: evii-frames-0.1.0
+          name: evii-frames-0.1.1
           if-no-files-found: warn
           path: |
-            build/EviiFrames-0.1.0-unsigned.ipa
+            build/EviiFrames-0.1.1-unsigned.ipa
             build/screenshots
             build/videos
             build/simulator
@@ -258,10 +260,10 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: evii-frames-0.1.0
+          name: evii-frames-0.1.1
           path: dist
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/EviiFrames-0.1.0-unsigned.ipa
+          files: dist/EviiFrames-0.1.1-unsigned.ipa
           fail_on_unmatched_files: true
           generate_release_notes: true

@@ -74,6 +74,9 @@ final class FlowsUITests: XCTestCase {
         app.buttons["Назад"].tap()
         app.buttons["nav-Інтерполяція"].tap()
         XCTAssertTrue(app.staticTexts["МОДЕЛЬ"].waitForExistence(timeout: 5))
+        tap(app, "RIFE 4.26")
+        tap(app, "RIFE heavy")
+        tap(app, "RIFE 4.22")
         tap(app, "RIFE lite")
         tap(app, "Apple")
         tap(app, "RIFE 4.25")
@@ -92,8 +95,13 @@ final class FlowsUITests: XCTestCase {
         }
         XCTAssertTrue(loop.waitForExistence(timeout: 3))
         loop.tap()
+        let quality = app.switches["Максимальна якість"]
+        if !quality.waitForExistence(timeout: 2) {
+            app.swipeUp()
+        }
+        XCTAssertTrue(quality.waitForExistence(timeout: 3))
+        quality.tap()
         app.switches["Режим UHD"].tap()
-        app.switches["Точність FP32"].tap()
         let stepwise = app.buttons.matching(NSPredicate(format: "label == %@ OR label BEGINSWITH %@", "Покроково", "Покроково")).firstMatch
         if !stepwise.waitForExistence(timeout: 2) {
             app.swipeUp()

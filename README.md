@@ -2,7 +2,7 @@
 
 iPhone app for on-device frame interpolation and smooth slow motion. v0.1, Ukrainian UI, dark screen, one lime accent. The name is a placeholder.
 
-Clips are limited to 30 seconds. Typical clips are 1–2 seconds, so the default model is RIFE 4.25 rather than a smaller network. Nothing is uploaded. There is no App Store build and no paid Apple Developer account: GitHub Actions archives with `CODE_SIGNING_ALLOWED=NO` and zips `Payload/EviiFrames.app` into an unsigned `.ipa`. A tag `v*` also attaches that ipa to a GitHub Release. This branch is not tagged.
+Clips are limited to 30 seconds. Typical clips are 1–2 seconds, so the build spends its size on quality: several MIT RIFE checkpoints, fixed shapes through 4K, and an optional four-pass flip average. Nothing is uploaded. There is no App Store build and no paid Apple Developer account: GitHub Actions archives with `CODE_SIGNING_ALLOWED=NO` and zips `Payload/EviiFrames.app` into an unsigned `.ipa`. A tag `v*` also attaches that ipa to a GitHub Release. This branch is not tagged.
 
 ## What v0.1 does
 
@@ -22,25 +22,33 @@ Clips are limited to 30 seconds. Typical clips are 1–2 seconds, so the default
 
 ## What is stubbed
 
-- **RIFE lite** is a visible option and is not selectable as an engine. Start uses RIFE 4.25. TODO: a smaller traced package.
 - **Apple VTFrameRateConversion** is used only when `VTFrameRateConversionConfiguration.isSupported` is true on that phone. The check is a runtime lookup, so an older SDK still links, and an iPhone 14 Pro on iOS 27 is not assumed to support it. v0.1 does not open a `VTFrameProcessor` session even when the flag is true; start keeps RIFE 4.25.
-- **UHD** stores the toggle. The official scale-0.5 pyramid is not in the app. `tools/convert_rife425.py --uhd` can trace it; v0.1 does not bundle it. 4K is scaled into the 1080p package.
+- **UHD** stores the toggle. In Practical-RIFE that flag is scale 0.5, which estimates motion on a coarser pyramid. It is not bundled. 4K uses its own packages instead.
+- **A separate anime checkpoint** is not in the MIT release list. RIFE 4.25 is the one the author describes as improved on anime, and it stays the default.
 
 ## iPhone 14 Pro
 
 The phone this build is aimed at is an iPhone 14 Pro: A16 Bionic, 6 GB of RAM, iOS 27. The deployment target stays iOS 17, `MinimumOSVersion` is 17.0, and there is no maximum system version, so iOS 27 can install it. `UIRequiredDeviceCapabilities` is `arm64`.
 
-The default max resolution is 1080p. Packages stop at 1088×1920 and 1920×1088. Convolutions are FP16 so a 1080p frame fits in 6 GB. The warp and the bilinear resize stay FP32 (`resample`); Core ML's own upsample did not match PyTorch. The loader tries the Neural Engine first (`cpuAndNeuralEngine`), then the GPU, then `.all`, then the CPU. A 4K activation is not loaded.
-- **FP32** stores the toggle. It does not swap in a full-float package.
+The default max resolution is 1080p so a 4K activation is not loaded unless the user raises the cap. Packages for every bundled model include 256×384 through 1080p and the 4K canvases 2176×3840 and 3840×2176, so a 4K frame is padded, not scaled down. Convolutions are FP16. The warp and the bilinear resize stay FP32 (`resample`); Core ML's own upsample did not match PyTorch. Rounding the weights to FP16 changes a smooth 6 px shift by about 0.00001 mean abs in PyTorch, under the 0.002 bar for shipping a second FP32 package. The loader tries the Neural Engine first (`cpuAndNeuralEngine`), then the GPU, then `.all`, then the CPU. 4K on 6 GB can still be killed by iOS; the resolution cap is the escape hatch.
+- **Максимальна якість** runs the selected model four times (identity, horizontal flip, vertical flip, both) and averages. That is about four times slower. The checkpoint's own `ensemble` flag has been a no-op since RIFE 4.21, so this is test-time flip averaging, not a second network.
 - The before/after control compares the poster still with the latest generated frame. It does not play the file at 0.25×. Playback is in Photos.
 - Scene detection and dedup run on a 96×96 CPU luma plane (fast grid 8, accurate grid 24), not a Metal kernel.
 - The phone can get hot. The pipeline pauses while the thermal state is serious or critical. There is no background GPU session. Leave the app open.
 
 ## Model
 
-`tools/convert_rife425.py` downloads Practical-RIFE 4.25, checks sha256 `e63d481b7ae5d4a4e6ad7ac5b410ff78f3bf7be3b51b2e38ca8152747abde5b4`, and writes fixed-shape `mlprogram` packages (FP16 convs, FP32 resample). See [tools/README.md](tools/README.md). Packages are not in git. CI caches them, compiles with `coremlcompiler`, and copies the `.mlmodelc` into the app.
+`tools/convert_rife425.py` downloads five Practical-RIFE checkpoints (MIT), checks each zip's sha256, and writes fixed-shape `mlprogram` packages (FP16 convs, FP32 resample). On a Mac it predicts every model at 256×384 against PyTorch on the smooth-shift pair, and it probes one FP32 package for 4.25. See [tools/README.md](tools/README.md). Packages are not in git. CI caches them, compiles with `coremlcompiler`, and copies the `.mlmodelc` into the app.
 
-Simulator and Mac Core ML timings are printed as `EVII_BENCH` and `benchmark-macos.json`. They are not iPhone timings.
+| Choice | Checkpoint | Graph |
+| --- | --- | --- |
+| RIFE 4.25 | Drive `1ZKjcbmt1hypiFprJPIKW0Tt0lr_2i7bg` | 5 blocks, scale 16…1, context 4. Default, anime note. |
+| RIFE 4.26 | Drive `1gViYvvQrtETBgU1w8axZSsr7YUuw31uy` | Same graph, weights from 2024-09-21. |
+| RIFE heavy | Drive `1vJy82jub1D9O8BZgjPeMu3HHx4bG-NY1` | 4.26 heavy, context 16. |
+| RIFE lite | Drive `1zlKblGuKNatulJNFf5jdB-emp9AqGK05` | 4.25 lite, scale 32, 16, 8, 4, 1. |
+| RIFE 4.22 | Drive `1qh2DSA9a1eZUTtZG9U9RQKO7N7OaUJ0_` | 4 wider blocks, scale 8…1. |
+
+Simulator and Mac Core ML timings are printed as `EVII_BENCH` (one line per model) and `benchmark-macos.json`. They are not iPhone timings.
 
 ## Build
 
@@ -48,7 +56,7 @@ On a Mac, Xcode 16 or newer, iOS 17 simulator:
 
 ```bash
 python3 -m pip install -r tools/requirements.txt
-python3 tools/convert_rife425.py --sizes 256x384,1088x1920,1920x1088 --out build/models
+python3 tools/convert_rife425.py --sizes 256x384,1088x1920,1920x1088,2176x3840,3840x2176 --out build/models
 mkdir -p EviiFrames/Resources/Models
 for package in build/models/*.mlpackage; do
   xcrun coremlcompiler compile "$package" EviiFrames/Resources/Models
@@ -60,7 +68,7 @@ xcodebuild test -project EviiFrames.xcodeproj -scheme EviiFrames \
   CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO
 ```
 
-The unsigned archive is the `ipa` job in `.github/workflows/ios.yml`. The same job also zips a simulator `.app` (`EviiFrames-0.1.0-simulator.zip`, arm64 and x86_64 when the runner can link both) for Appetize.io. `build/simulator/ARCH.txt` is the `lipo` output.
+The unsigned archive is the `ipa` job in `.github/workflows/ios.yml`. The artifact is `evii-frames-0.1.1` and the ipa inside it is `EviiFrames-0.1.1-unsigned.ipa`. The same job also zips a simulator `.app` (`EviiFrames-0.1.1-simulator.zip`, arm64 and x86_64 when the runner can link both) for Appetize.io. `build/simulator/ARCH.txt` is the `lipo` output.
 
 ## What CI actually runs
 
@@ -73,7 +81,7 @@ Simulator and Mac numbers are not iPhone 14 Pro timings. HDR is decoded as SDR B
 1. Поставте AltServer на Mac або Windows з сайту AltStore.
 2. На iPhone: Параметри → Приватність і безпека → Режим розробника → увімкніть і перезавантажте.
 3. Підключіть iPhone кабелем, відкрийте AltServer і встановіть AltStore зі своїм безкоштовним Apple ID.
-4. Завантажте `EviiFrames-0.1.0-unsigned.ipa` з артефакту GitHub Actions (або з релізу, коли з’явиться тег `v*`).
+4. Завантажте `EviiFrames-0.1.1-unsigned.ipa` з артефакту GitHub Actions (або з релізу, коли з’явиться тег `v*`).
 5. В AltStore натисніть «+» і виберіть цей ipa.
 
 Безкоштовний Apple ID підписує застосунок на 7 днів і дозволяє до трьох застосунків. Щоб продовжити, відкрийте AltServer у тій самій мережі, що й iPhone, і оновіть застосунок в AltStore. App Store і платний акаунт не потрібні.

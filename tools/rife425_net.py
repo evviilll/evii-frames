@@ -1,4 +1,25 @@
-"""RIFE 4.25 inference graph. Architecture matches Practical-RIFE train_log (MIT, hzwer)."""
+"""Practical-RIFE inference graphs (MIT, hzwer).
+
+The architecture follows the IFNet_HDv3.py shipped inside each official
+checkpoint zip. Bilinear resize goes through grid_sample: Core ML's
+upsample_bilinear does not match PyTorch interpolate (align_corners=False).
+The official warp is already grid_sample with align_corners=True.
+
+Variants, all from the same MIT project (no GPL weights):
+
+- rife425: 5 blocks, scale 16, 8, 4, 2, 1. Default. The 4.25 note says anime improved.
+- rife426: same graph as 4.25, newer weights (2024-09-21).
+- rife426heavy: same pyramid, context head outputs 16 channels instead of 4.
+- rife425lite: last block width 24, scale 32, 16, 8, 4, 1.
+- rife422: 4 blocks, wider head, scale 8, 4, 2, 1. The diffusion-video checkpoint.
+
+Official `ensemble=True` prints that ensemble is unsupported since v4.21.
+Flip-averaging is applied outside the traced graph.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -22,7 +43,6 @@ def resize_bilinear(x, scale_factor):
     dst_x = torch.arange(ow, device=device, dtype=dtype)
     src_y = (dst_y + 0.5) / float(scale_factor) - 0.5
     src_x = (dst_x + 0.5) / float(scale_factor) - 0.5
-    # align_corners=False unnormalize: g = (2*src + 1)/size - 1
     gy = (src_y * 2.0 + 1.0) / float(h) - 1.0
     gx = (src_x * 2.0 + 1.0) / float(w) - 1.0
     grid_y = gy.view(1, oh, 1).expand(n, oh, ow)
@@ -75,12 +95,12 @@ def conv(in_planes, out_planes, kernel_size=3, stride=1, padding=1, dilation=1):
 
 
 class Head(nn.Module):
-    def __init__(self):
+    def __init__(self, width=16, out_channels=4):
         super().__init__()
-        self.cnn0 = nn.Conv2d(3, 16, 3, 2, 1)
-        self.cnn1 = nn.Conv2d(16, 16, 3, 1, 1)
-        self.cnn2 = nn.Conv2d(16, 16, 3, 1, 1)
-        self.cnn3 = nn.ConvTranspose2d(16, 4, 4, 2, 1)
+        self.cnn0 = nn.Conv2d(3, width, 3, 2, 1)
+        self.cnn1 = nn.Conv2d(width, width, 3, 1, 1)
+        self.cnn2 = nn.Conv2d(width, width, 3, 1, 1)
+        self.cnn3 = nn.ConvTranspose2d(width, out_channels, 4, 2, 1)
         self.relu = nn.LeakyReLU(0.2, inplace=False)
 
     def forward(self, x):
@@ -131,18 +151,92 @@ class IFBlock(nn.Module):
         return flow, mask, feat
 
 
+@dataclass(frozen=True)
+class Variant:
+    name: str
+    tag: str
+    title: str
+    blocks: tuple[int, ...]
+    head_width: int
+    head_out: int
+    scales: tuple[float, ...]
+    note: str
+
+
+def _variant(name, tag, title, blocks, head_width, head_out, scales, note) -> Variant:
+    return Variant(name, tag, title, blocks, head_width, head_out, tuple(float(s) for s in scales), note)
+
+
+VARIANTS = {
+    "rife425": _variant(
+        "rife425",
+        "RIFE425",
+        "RIFE 4.25",
+        (192, 128, 96, 64, 32),
+        16,
+        4,
+        (16, 8, 4, 2, 1),
+        "Default. Practical-RIFE says 4.25 improved anime. No separate permissive anime checkpoint.",
+    ),
+    "rife426": _variant(
+        "rife426",
+        "RIFE426",
+        "RIFE 4.26",
+        (192, 128, 96, 64, 32),
+        16,
+        4,
+        (16, 8, 4, 2, 1),
+        "Same 5-block graph as 4.25. Weights from 2024-09-21.",
+    ),
+    "rife426heavy": _variant(
+        "rife426heavy",
+        "RIFE426H",
+        "RIFE 4.26 heavy",
+        (192, 128, 96, 64, 32),
+        16,
+        16,
+        (16, 8, 4, 2, 1),
+        "4.26 pyramid with a 16-channel context head instead of 4.",
+    ),
+    "rife425lite": _variant(
+        "rife425lite",
+        "RIFE425L",
+        "RIFE 4.25 lite",
+        (192, 128, 96, 64, 24),
+        16,
+        4,
+        (32, 16, 8, 4, 1),
+        "Narrower last block and a coarser pyramid. Lower cost, not a quality mode.",
+    ),
+    "rife422": _variant(
+        "rife422",
+        "RIFE422",
+        "RIFE 4.22",
+        (256, 192, 96, 48),
+        32,
+        8,
+        (8, 4, 2, 1),
+        "Four wider blocks. Practical-RIFE points 4.22 at diffusion-video post.",
+    ),
+}
+
+
 class IFNet(nn.Module):
-    def __init__(self):
+    def __init__(self, variant: Variant):
         super().__init__()
-        self.block0 = IFBlock(7 + 8, c=192)
-        self.block1 = IFBlock(8 + 4 + 8 + 8, c=128)
-        self.block2 = IFBlock(8 + 4 + 8 + 8, c=96)
-        self.block3 = IFBlock(8 + 4 + 8 + 8, c=64)
-        self.block4 = IFBlock(8 + 4 + 8 + 8, c=32)
-        self.encode = Head()
+        head_out = variant.head_out
+        for index, channels in enumerate(variant.blocks):
+            # in_planes is what conv0 sees. Later blocks concatenate the 4-channel
+            # flow inside IFBlock, so that 4 is part of the declared width.
+            if index == 0:
+                in_planes = 7 + 2 * head_out
+            else:
+                in_planes = 20 + 2 * head_out
+            setattr(self, f"block{index}", IFBlock(in_planes, c=channels))
+        self.block_count = len(variant.blocks)
+        self.encode = Head(width=variant.head_width, out_channels=head_out)
 
     def forward(self, img0, img1, timestep, scale_list):
-        # timestep: N,1,1,1
         timestep = timestep.repeat(1, 1, img0.shape[2], img0.shape[3])
         f0 = self.encode(img0)
         f1 = self.encode(img1)
@@ -151,9 +245,9 @@ class IFNet(nn.Module):
         feat = None
         warped_img0 = img0
         warped_img1 = img1
-        blocks = (self.block0, self.block1, self.block2, self.block3, self.block4)
-        for i, block in enumerate(blocks):
-            scale = scale_list[i]
+        for index in range(self.block_count):
+            block = getattr(self, f"block{index}")
+            scale = scale_list[index]
             if flow is None:
                 flow, mask, feat = block(
                     torch.cat((img0, img1, f0, f1, timestep), 1), None, scale
@@ -173,15 +267,30 @@ class IFNet(nn.Module):
         return warped_img0 * mask + warped_img1 * (1 - mask)
 
 
-class RIFE425(nn.Module):
-    def __init__(self, uhd=False):
+class RIFE(nn.Module):
+    def __init__(self, variant: Variant):
         super().__init__()
-        self.net = IFNet()
-        # Python floats so scale_factor stays a constant in the graph.
-        if uhd:
-            self.scale_list = (32.0, 16.0, 8.0, 4.0, 2.0)
-        else:
-            self.scale_list = (16.0, 8.0, 4.0, 2.0, 1.0)
+        self.net = IFNet(variant)
+        self.scale_list = tuple(variant.scales)
 
     def forward(self, img0, img1, timestep):
         return self.net(img0, img1, timestep, self.scale_list)
+
+
+class RIFE425(RIFE):
+    """Backwards-compatible name. `--uhd` doubles the pyramid (official scale 0.5)."""
+
+    def __init__(self, uhd=False):
+        variant = VARIANTS["rife425"]
+        if uhd:
+            variant = Variant(
+                variant.name,
+                variant.tag,
+                variant.title,
+                variant.blocks,
+                variant.head_width,
+                variant.head_out,
+                tuple(scale * 2.0 for scale in variant.scales),
+                variant.note,
+            )
+        super().__init__(variant)

@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreMedia
 import Foundation
+@testable import EviiFrames
 
 struct MediaFacts {
     var videoFrames: Int

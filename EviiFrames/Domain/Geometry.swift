@@ -1,14 +1,15 @@
 import Foundation
 
 enum Geometry {
-    /// Height × width. Both axes are multiples of 64, which is what RIFE 4.25
-    /// needs for scale list 16, 8, 4, 2, 1 (the finest block also downsamples ×4).
+    /// Height × width. Both axes are multiples of 64. That covers scale 32
+    /// (4.25 lite) and scale 16 (4.25 / 4.26), and 2176×3840 holds a 4K frame.
     static let buckets: [(h: Int, w: Int)] = [
         (256, 384), (384, 256),
         (384, 640), (640, 384),
         (512, 896), (896, 512),
         (768, 1280), (1280, 768),
         (1088, 1920), (1920, 1088),
+        (2176, 3840), (3840, 2176),
     ]
 
     static func pad(_ value: Int, multiple: Int) -> Int {

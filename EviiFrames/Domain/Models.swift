@@ -9,6 +9,9 @@ enum WorkMode: String, Codable, CaseIterable, Identifiable {
 
 enum ModelChoice: String, Codable, CaseIterable, Identifiable {
     case rife425
+    case rife426
+    case rife426Heavy
+    case rife422
     case rifeLite
     case apple
 
@@ -17,18 +20,32 @@ enum ModelChoice: String, Codable, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .rife425: return "RIFE 4.25"
+        case .rife426: return "RIFE 4.26"
+        case .rife426Heavy: return "RIFE heavy"
+        case .rife422: return "RIFE 4.22"
         case .rifeLite: return "RIFE lite"
         case .apple: return "Apple"
         }
     }
 
-    /// RIFE lite has no package. Apple FRC runs only when this phone's
-    /// VideoToolbox says `isSupported` — an iPhone 14 Pro on iOS 27 is not assumed.
+    /// File prefix of the compiled packages. Longer names are matched first
+    /// (`RIFE425L` before `RIFE425`, `RIFE426H` before `RIFE426`).
+    var packagePrefix: String {
+        switch self {
+        case .rife425, .apple: return "RIFE425"
+        case .rife426: return "RIFE426"
+        case .rife426Heavy: return "RIFE426H"
+        case .rife422: return "RIFE422"
+        case .rifeLite: return "RIFE425L"
+        }
+    }
+
+    /// Apple FRC runs only when this phone's VideoToolbox says `isSupported`.
+    /// An iPhone 14 Pro on iOS 27 is not assumed to. Every RIFE row is a real package.
     var engineAvailable: Bool {
         switch self {
-        case .rife425: return true
-        case .rifeLite: return false
         case .apple: return AppleFrameRate.isRuntimeSupported
+        case .rife425, .rife426, .rife426Heavy, .rife422, .rifeLite: return true
         }
     }
 }
@@ -186,13 +203,62 @@ struct InterpolationSettings: Equatable, Codable {
     var dedupThresholdPercent: Double = 1.0
     var loop: Bool = false
     var uhd: Bool = false
+    /// Kept so a settings blob from 0.1.0 still decodes. The shipped graph is
+    /// FP16 conv + FP32 warp; a separate FP32 package is built only when the
+    /// smooth-shift probe shows a real gain, and this toggle does not select it.
     var preferFP32: Bool = false
+    /// Four passes of the selected model: identity, horizontal flip, vertical
+    /// flip, and both. Official in-graph ensemble is a no-op since RIFE 4.21.
+    var maximumQuality: Bool = false
     var style: ProcessStyle = .together
+
+    enum CodingKeys: String, CodingKey {
+        case model, useTargetFPS, multiplier, targetFPS, skipSceneChanges
+        case sceneSensitivity, dedup, dedupThresholdPercent, loop, uhd
+        case preferFP32, maximumQuality, style
+    }
 
     var multiplierChoices: [Int] { [2, 4, 8, 16] }
 
     func resolvedModel() -> ModelChoice {
         model.engineAvailable ? model : .rife425
+    }
+}
+
+extension InterpolationSettings {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init()
+        model = try container.decodeIfPresent(ModelChoice.self, forKey: .model) ?? model
+        useTargetFPS = try container.decodeIfPresent(Bool.self, forKey: .useTargetFPS) ?? useTargetFPS
+        multiplier = try container.decodeIfPresent(Int.self, forKey: .multiplier) ?? multiplier
+        targetFPS = try container.decodeIfPresent(Double.self, forKey: .targetFPS) ?? targetFPS
+        skipSceneChanges = try container.decodeIfPresent(Bool.self, forKey: .skipSceneChanges) ?? skipSceneChanges
+        sceneSensitivity = try container.decodeIfPresent(Double.self, forKey: .sceneSensitivity) ?? sceneSensitivity
+        dedup = try container.decodeIfPresent(DedupMode.self, forKey: .dedup) ?? dedup
+        dedupThresholdPercent = try container.decodeIfPresent(Double.self, forKey: .dedupThresholdPercent) ?? dedupThresholdPercent
+        loop = try container.decodeIfPresent(Bool.self, forKey: .loop) ?? loop
+        uhd = try container.decodeIfPresent(Bool.self, forKey: .uhd) ?? uhd
+        preferFP32 = try container.decodeIfPresent(Bool.self, forKey: .preferFP32) ?? preferFP32
+        maximumQuality = try container.decodeIfPresent(Bool.self, forKey: .maximumQuality) ?? maximumQuality
+        style = try container.decodeIfPresent(ProcessStyle.self, forKey: .style) ?? style
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(model, forKey: .model)
+        try container.encode(useTargetFPS, forKey: .useTargetFPS)
+        try container.encode(multiplier, forKey: .multiplier)
+        try container.encode(targetFPS, forKey: .targetFPS)
+        try container.encode(skipSceneChanges, forKey: .skipSceneChanges)
+        try container.encode(sceneSensitivity, forKey: .sceneSensitivity)
+        try container.encode(dedup, forKey: .dedup)
+        try container.encode(dedupThresholdPercent, forKey: .dedupThresholdPercent)
+        try container.encode(loop, forKey: .loop)
+        try container.encode(uhd, forKey: .uhd)
+        try container.encode(preferFP32, forKey: .preferFP32)
+        try container.encode(maximumQuality, forKey: .maximumQuality)
+        try container.encode(style, forKey: .style)
     }
 }
 
@@ -227,9 +293,9 @@ struct ExportSettings: Equatable, Codable {
     var quality: Double = 75
     var container: ContainerChoice = .mov
     var maxFPS: MaxFPSChoice = .none
-    /// 1080p is the default because the target phone is an iPhone 14 Pro:
-    /// A16, 6 GB. A 4K RIFE activation does not fit that budget. The 4K
-    /// choice still scales into the 1088×1920 package.
+    /// 1080p stays the default so an iPhone 14 Pro (A16, 6 GB) does not load
+    /// a 4K activation unless the user asks. 4K and original use the
+    /// 2176×3840 / 3840×2176 packages and are not scaled down.
     var maxResolution: MaxResolution = .p1080
     var keepAudio: Bool = true
     var keepMetadata: Bool = true

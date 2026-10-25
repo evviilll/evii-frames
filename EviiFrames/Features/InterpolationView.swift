@@ -179,7 +179,7 @@ struct InterpolationSettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 SectionLabel(text: "МОДЕЛЬ")
-                HStack(spacing: 8) {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
                     ForEach(ModelChoice.allCases) { choice in
                         PillChoice(title: choice.title, selected: job.interpolation.model == choice, lime: choice == .rife425) {
                             model.mutate(jobID) { $0.interpolation.model = choice }
@@ -237,12 +237,16 @@ struct InterpolationSettingsView: View {
                 EviiCard {
                     VStack(alignment: .leading, spacing: 16) {
                         ToggleRow(title: "Зациклити", subtitle: "Інтерполяція з кінця на початок", isOn: binding(\.loop))
-                        ToggleRow(title: "Режим UHD", subtitle: "Для 4K: точніший рух, повільніше", isOn: binding(\.uhd))
-                        Text("UHD потребує окремої збірки моделі (tools/convert_rife425.py --uhd). У v0.1 лишається RIFE 4.25.")
+                        ToggleRow(
+                            title: "Максимальна якість",
+                            subtitle: "Усереднення дзеркал, близько ×4 часу",
+                            isOn: binding(\.maximumQuality)
+                        )
+                        Text("Чотири проходи однієї моделі: кадр, горизонталь, вертикаль і обидва. Телефон має лишатися відкритим і нагріється. Офіційний ensemble у вагах від 4.21 нічого не робить — це зовнішнє усереднення.")
                             .font(.system(size: 12))
                             .foregroundStyle(theme.tertiary)
-                        ToggleRow(title: "Точність FP32", subtitle: "Замість FP16: повільніше, рідко потрібно", isOn: binding(\.preferFP32))
-                        Text("Зібрана модель — згортки FP16, варп FP32. Перемикач зберігається, ваги не змінює.")
+                        ToggleRow(title: "Режим UHD", subtitle: "Офіційний scale 0.5: швидше, менше деталей", isOn: binding(\.uhd))
+                        Text("Не зібрано. Для 4K є пакети 2176×3840 і 3840×2176 — їх вмикає ліміт роздільності, не цей перемикач.")
                             .font(.system(size: 12))
                             .foregroundStyle(theme.tertiary)
                     }
@@ -267,12 +271,18 @@ struct InterpolationSettingsView: View {
     private func modelNote(_ job: ClipJob) -> String {
         switch job.interpolation.model {
         case .rife425:
-            return "Apple — лише iOS 26, якщо пристрій підтримує"
+            return "Типовий вибір, MIT. У Practical-RIFE саме 4.25 покращила аніме. Окремої аніме-моделі з вільною ліцензією немає."
+        case .rife426:
+            return "Ті самі 5 блоків, що в 4.25. Новіші ваги від 21 вересня 2024. MIT."
+        case .rife426Heavy:
+            return "RIFE 4.26 heavy: контекст 16 каналів замість 4. Важча і повільніша. MIT."
+        case .rife422:
+            return "RIFE 4.22: чотири ширші блоки. Автор радив її для дифузійного відео. MIT."
         case .rifeLite:
-            return "RIFE lite ще не зібрана. Старт візьме RIFE 4.25."
+            return "RIFE 4.25 lite: вужчий останній блок, піраміда 32…1. Менше обчислень, не максимум якості. MIT."
         case .apple:
             if AppleFrameRate.isRuntimeSupported {
-                return "isSupported == true. Сесію VTFrameProcessor v0.1 ще не відкриває, старт візьме RIFE 4.25."
+                return "isSupported == true. Сесію VTFrameProcessor не відкриваю, старт візьме RIFE 4.25."
             }
             return "isSupported == false на цьому iPhone. Старт візьме RIFE 4.25."
         }

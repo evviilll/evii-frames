@@ -64,32 +64,47 @@ final class VideoPipeline {
         progress.queueCount = queueCount
         try check(callbacks)
 
-        let outputSize = job.outputPixelSize()
-        callbacks.log("Вихід \(outputSize.width)×\(outputSize.height), режим \(job.mode == .slowMo ? "сповільнення" : "інтерполяція")")
+        let fitted = job.outputPixelSize()
+        var prefix = job.interpolation.model.packagePrefix
         if job.interpolation.uhd {
-            callbacks.log("UHD: окрему Core ML-модель зі scale 0.5 не зібрано. Лишаю RIFE 4.25.")
+            callbacks.log("UHD у Practical-RIFE — це scale 0.5, грубіший рух. Окрему збірку не веземо: 4K іде своїм пакетом.")
         }
         if job.interpolation.preferFP32 {
-            callbacks.log("FP32: зібрана модель — згортки FP16, варп FP32. Перемикач у v0.1 не змінює ваги.")
+            callbacks.log("FP32-перемикач зі старої збірки не міняє ваги. Згортки FP16, варп FP32.")
         }
         switch job.interpolation.model {
-        case .rife425:
+        case .rife425, .rife426, .rife426Heavy, .rife422, .rifeLite:
             break
-        case .rifeLite:
-            callbacks.log("RIFE lite ще не зібрана. Беру RIFE 4.25.")
         case .apple:
+            prefix = "RIFE425"
             if AppleFrameRate.isRuntimeSupported {
-                callbacks.log("VTFrameRateConversion isSupported. Сесію VTFrameProcessor у v0.1 не відкриваю, беру RIFE 4.25.")
+                callbacks.log("VTFrameRateConversion isSupported. Сесію VTFrameProcessor не відкриваю, беру RIFE 4.25.")
             } else {
                 callbacks.log("VTFrameRateConversion isSupported == false на цьому пристрої. Беру RIFE 4.25.")
             }
         }
-
-        let bucket = Geometry.bucket(width: outputSize.width, height: outputSize.height)
-        let model = try RIFEModel.loadBest(containing: outputSize.width, height: outputSize.height)
-        callbacks.log("Модель \(model.width)×\(model.height), compute \(model.computeLabel)")
-        if bucket.h != model.height || bucket.w != model.width {
-            callbacks.log("Найближча зібрана модель \(model.height)×\(model.width)")
+        if RIFEModel.bundledModels(prefix: prefix).isEmpty {
+            callbacks.log("Немає пакетів \(prefix). Беру RIFE 4.25.")
+            prefix = "RIFE425"
+        }
+        let model = try RIFEModel.loadBest(prefix: prefix, containing: fitted.width, height: fitted.height)
+        model.augment = job.interpolation.maximumQuality
+        var outputSize = fitted
+        if fitted.width > model.width || fitted.height > model.height {
+            let scale = min(
+                Double(model.width) / Double(max(fitted.width, 1)),
+                Double(model.height) / Double(max(fitted.height, 1))
+            )
+            outputSize = (
+                width: max(2, Geometry.even(Int((Double(fitted.width) * scale).rounded(.towardZero)))),
+                height: max(2, Geometry.even(Int((Double(fitted.height) * scale).rounded(.towardZero))))
+            )
+            callbacks.log("Пакет \(model.packageName) менший за кадр. Зменшую до \(outputSize.width)×\(outputSize.height).")
+        }
+        callbacks.log("Вихід \(outputSize.width)×\(outputSize.height), режим \(job.mode == .slowMo ? "сповільнення" : "інтерполяція")")
+        callbacks.log("Модель \(model.packageName), compute \(model.computeLabel)")
+        if job.interpolation.maximumQuality {
+            callbacks.log("Максимальна якість: 4 проходи (кадр, горизонталь, вертикаль, обидва). Близько ×4 часу. Телефон має лишатися відкритим.")
         }
 
         progress.phase = .analysis

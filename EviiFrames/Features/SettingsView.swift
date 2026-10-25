@@ -17,18 +17,18 @@ struct SettingsView: View {
 
                 EviiCard {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Evii Frames 0.1")
+                        Text("Evii Frames 0.1.1")
                             .font(.system(size: 16, weight: .semibold))
                         Text("Кліпи до 30 секунд. Інтерполяція на цьому iPhone, без хмари. Назва тимчасова.")
                             .font(.system(size: 14))
                             .foregroundStyle(theme.secondary)
-                        Text("Цільовий телефон — iPhone 14 Pro, A16, 6 ГБ, iOS 27. Мінімальна версія застосунку — iOS 17, верхньої межі немає. Вихід за замовчуванням — 1080p. Згортки FP16, варп FP32, спочатку Neural Engine.")
+                        Text("Цільовий телефон — iPhone 14 Pro, A16, 6 ГБ, iOS 27. Мінімальна версія застосунку — iOS 17, верхньої межі немає. Вихід за замовчуванням — 1080p, щоб активація вмістилась у 6 ГБ. 4K і оригінал не зменшують кадр: для них зібрані пакети 2176×3840 і 3840×2176. Якщо застосунок закриється на 4K, поверніть 1080p.")
                             .font(.system(size: 14))
                             .foregroundStyle(theme.secondary)
                         Text(appleNote)
                             .font(.system(size: 14))
                             .foregroundStyle(theme.secondary)
-                        Text("Модель за замовчуванням — RIFE 4.25 (MIT, Practical-RIFE). Згортки FP16, варп FP32. RIFE lite не зібрана.")
+                        Text("Моделі на вибір, усі MIT (Practical-RIFE, не GPL): RIFE 4.25, 4.26, 4.26 heavy, 4.25 lite, 4.22. Типова — 4.25, бо автор відзначає краще аніме. Згортки FP16, варп FP32, спочатку Neural Engine. Окремий FP32 не веземо: на плавному зсуві округлення ваг дає близько 0.00001 і не помітне. «Максимальна якість» — чотири дзеркальні проходи, близько ×4 часу.")
                             .font(.system(size: 14))
                             .foregroundStyle(theme.secondary)
                         Text(model.proResAvailable ? "ProRes на цьому пристрої доступний." : "ProRes тут недоступний — лишаються HEVC і H.264.")
