@@ -14,7 +14,7 @@ Each height and width is a multiple of 64, which is also a multiple of 32, so ev
 - 384×640 and 640×384
 - 512×896 and 896×512
 - 768×1280 and 1280×768
-- 1088×1920 and 1920×1088 (1080p)
+- 1088×1920 and 1920×1088 (1080p). RIFE lite uses 1152×1920 and 1920×1152 here: its scale-32 pyramid only returns to the frame when both axes are multiples of 128, and 1088 is not. The app still targets the 1080p cap and pads into the larger lite package.
 - 2176×3840 and 3840×2176 (4K, 2160 padded to the next multiple of 64)
 
 The default export cap stays 1080p. Choosing 4K or original does not scale a 4K frame down into 1088×1920. A 4K activation can still be too large for an iPhone 14 Pro (A16, 6 GB); the cap is how you stay inside that.

@@ -113,6 +113,15 @@ FP32_GAIN_REQUIRED = 0.002
 # the 14 GB runner. Those sizes are two sequential processes.
 LARGE_PIXELS = 1088 * 1920
 
+# Lite's coarsest scale is 32, then two stride-2 convolutions. The way back is
+# exact only when both axes are multiples of 128. 1088 (1080 padded to 64) is
+# not, and the block returns 1152, which cannot be concatenated with the frame.
+# 1152 contains a 1080p frame. The app pads into that package and crops back.
+LITE_SIZE_MAP = {
+    (1088, 1920): (1152, 1920),
+    (1920, 1088): (1920, 1152),
+}
+
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -270,6 +279,34 @@ def precision_gap(net: torch.nn.Module, label: str) -> dict:
     return {"fp16_weight_round_smooth_mean_abs": gap}
 
 
+def sizes_for(model_id: str, sizes: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    if model_id != "rife425lite":
+        return list(sizes)
+    return [LITE_SIZE_MAP.get((height, width), (height, width)) for height, width in sizes]
+
+
+def _stride2(n: int) -> int:
+    return (n - 1) // 2 + 1
+
+
+def assert_pyramid_closes(model_id: str, height: int, width: int) -> None:
+    """The official block resizes by scale_factor, not to the original size.
+
+    Two stride-2 convolutions round odd edges up, so the upsample does not
+    land on the frame and the next cat fails. Reject that before tracing.
+    """
+    for scale in VARIANTS[model_id].scales:
+        down_h = int(height * (1.0 / scale))
+        down_w = int(width * (1.0 / scale))
+        up_h = int(_stride2(_stride2(down_h)) * 4 * scale)
+        up_w = int(_stride2(_stride2(down_w)) * 4 * scale)
+        if up_h != height or up_w != width:
+            raise SystemExit(
+                f"{model_id} {height}x{width} scale {scale:g} returns {up_h}x{up_w}. "
+                f"Use a multiple of {int(scale) * 4} on both axes."
+            )
+
+
 def parse_sizes(text: str | None) -> list[tuple[int, int]]:
     if not text:
         return list(DEFAULT_SIZES)
@@ -343,6 +380,7 @@ def trace_script(model_id: str, height: int, width: int, out_dir: Path, weights_
     """Trace one fixed shape and exit. This process must not import coremltools."""
     if height * width <= LARGE_PIXELS:
         raise SystemExit(f"{height}x{width} is traced inside --convert-one")
+    assert_pyramid_closes(model_id, height, width)
     item = catalog_by_id(model_id)
     download_zip(item, weights_dir / item["zip_name"])
     net = build_net(model_id, load_weights(weights_dir / item["zip_name"], weights_dir))
@@ -368,6 +406,7 @@ def convert_package(
     out_dir: Path,
     full_fp32: bool,
 ) -> dict:
+    assert_pyramid_closes(model_id, height, width)
     if height * width > LARGE_PIXELS:
         raise SystemExit(
             f"{height}x{width} is traced with --trace-only and converted with "
@@ -730,7 +769,7 @@ def merge_manifest(out_dir: Path, models: list[str], sizes: list[tuple[int, int]
         check_path = records_dir / f"{model_id}-check.json"
         if check_path.exists():
             checks.append(json.loads(check_path.read_text()))
-        for height, width in sizes:
+        for height, width in sizes_for(model_id, sizes):
             tag = VARIANTS[model_id].tag
             package_record = records_dir / f"{tag}_{height}x{width}.json"
             if package_record.exists():
@@ -748,7 +787,7 @@ def merge_manifest(out_dir: Path, models: list[str], sizes: list[tuple[int, int]
         ),
         "anime_note": "RIFE 4.25 is the checkpoint Practical-RIFE describes as improved on anime. No separate permissive anime model is published.",
         "ensemble_note": "Official IFNet ensemble is unsupported since v4.21. The app flip-averages outside the package when maximum quality is on.",
-        "shape_note": "Fixed HxW packages, both axes multiples of 64, including 2176x3840 and 3840x2176 for 4K. Dynamic shapes are unsupported for this graph.",
+        "shape_note": "Fixed HxW packages, both axes multiples of 64, including 2176x3840 and 3840x2176 for 4K. RIFE lite uses 1152x1920 and 1920x1152 instead of 1088, because scale 32 only round-trips on a multiple of 128. Dynamic shapes are unsupported for this graph.",
         "checks": checks,
         "packages": packages,
     }
@@ -777,7 +816,7 @@ def orchestrate(models: list[str], sizes: list[tuple[int, int]], out_dir: Path, 
         )
         if check_only:
             continue
-        for height, width in sizes:
+        for height, width in sizes_for(model_id, sizes):
             tag = VARIANTS[model_id].tag
             package = out_dir / f"{tag}_{height}x{width}.mlpackage"
             record = records / f"{tag}_{height}x{width}.json"
@@ -793,7 +832,7 @@ def orchestrate(models: list[str], sizes: list[tuple[int, int]], out_dir: Path, 
         if ship_fp32:
             print("FP32 probe beat mixed precision; reconverting every package as FP32")
             for model_id in models:
-                for height, width in sizes:
+                for height, width in sizes_for(model_id, sizes):
                     tag = VARIANTS[model_id].tag
                     package = out_dir / f"{tag}_{height}x{width}.mlpackage"
                     if package.exists():
