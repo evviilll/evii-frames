@@ -193,8 +193,9 @@ final class PipelineQATests: XCTestCase {
         XCTAssertEqual(size.width, 160)
         XCTAssertEqual(size.height, 96)
         let run = try await export(job)
-        XCTAssertEqual(run.result.width, 160)
-        XCTAssertEqual(run.result.height, 96)
+        let capped = try XCTUnwrap(run.result)
+        XCTAssertEqual(capped.width, 160)
+        XCTAssertEqual(capped.height, 96)
         try await assertPlayable(
             name: "resolution-cap",
             result: run.result,
@@ -233,8 +234,9 @@ final class PipelineQATests: XCTestCase {
             $0.interpolation.multiplier = 2
         }
         let hevc = try await export(hevcJob)
-        let hevcFacts = try await MediaInspect.inspect(hevc.result.url)
-        let hevcProbe = try await VideoProbe.probe(hevc.result.url)
+        let hevcResult = try XCTUnwrap(hevc.result)
+        let hevcFacts = try await MediaInspect.inspect(hevcResult.url)
+        let hevcProbe = try await VideoProbe.probe(hevcResult.url)
         print("EVII_QA hevc requested codec=\(hevcProbe.codecLabel) playable=\(hevcFacts.playable)")
         if EncoderSupport.hevcAvailable() {
             XCTAssertTrue(hevcProbe.codecLabel.contains("HEVC") || hevcProbe.codecLabel.contains("hvc"))
@@ -257,7 +259,8 @@ final class PipelineQATests: XCTestCase {
             $0.interpolation.multiplier = 2
         }
         let prores = try await export(proresJob)
-        let proresProbe = try await VideoProbe.probe(prores.result.url)
+        let proresResult = try XCTUnwrap(prores.result)
+        let proresProbe = try await VideoProbe.probe(proresResult.url)
         print("EVII_QA prores available=\(EncoderSupport.proResAvailable()) codec=\(proresProbe.codecLabel)")
         if EncoderSupport.proResAvailable() {
             XCTAssertEqual(proresProbe.codecLabel, "ProRes")
@@ -265,9 +268,9 @@ final class PipelineQATests: XCTestCase {
             XCTAssertTrue(prores.logs.contains { $0.contains("ProRes") })
             XCTAssertTrue(proresProbe.codecLabel == "HEVC" || proresProbe.codecLabel == "H.264")
         }
-        let facts = try await MediaInspect.inspect(prores.result.url)
+        let facts = try await MediaInspect.inspect(proresResult.url)
         XCTAssertTrue(facts.playable)
-        XCTAssertEqual(facts.videoFrames, prores.result.frameCount)
+        XCTAssertEqual(facts.videoFrames, proresResult.frameCount)
     }
 
     func testThirtySecondStreamCancelsWithoutBuffering() async throws {
@@ -475,7 +478,8 @@ final class PipelineQATests: XCTestCase {
 enum ResidentMemory {
     static func footprint() -> UInt64 {
         var info = task_vm_info_data_t()
-        var count = mach_msg_type_number_t(TASK_VM_INFO_COUNT)
+        // TASK_VM_INFO_COUNT is a C macro the iOS SDK does not expose to Swift.
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
         let result = withUnsafeMutablePointer(to: &info) {
             $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
                 task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
