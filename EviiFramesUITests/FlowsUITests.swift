@@ -49,11 +49,11 @@ final class FlowsUITests: XCTestCase {
         app.buttons["theme-toggle"].tap()
         let exportRow = app.buttons["nav-Експорт"]
         XCTAssertTrue(exportRow.waitForExistence(timeout: 5))
-        if !exportRow.isHittable {
+        for _ in 0..<5 where !exportRow.isHittable {
             app.swipeUp()
         }
         exportRow.tap()
-        XCTAssertTrue(app.staticTexts["КОДЕК"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["H.264"].waitForExistence(timeout: 8))
         tap(app, "H.264")
         tap(app, "HEVC")
         tap(app, "ProRes")

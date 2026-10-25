@@ -36,7 +36,14 @@ struct DoneView: View {
 
     private func content(_ job: ClipJob, _ result: JobResult) -> some View {
         let shown = reveal
-        return VStack(alignment: .leading, spacing: 16) {
+        return ScrollView {
+            doneStack(job, result, shown: shown)
+        }
+        .background(theme.bg.ignoresSafeArea())
+    }
+
+    private func doneStack(_ job: ClipJob, _ result: JobResult, shown: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
             ZStack {
                 Text("Готово")
                     .font(.system(size: 17, weight: .semibold))
@@ -120,7 +127,6 @@ struct DoneView: View {
             Spacer(minLength: 0)
         }
         .padding(16)
-        .background(theme.bg.ignoresSafeArea())
     }
 
     private var reveal: CGFloat {

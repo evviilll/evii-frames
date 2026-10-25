@@ -251,13 +251,26 @@ enum ClipFactory {
     }
 
     private static func waitReady(_ input: AVAssetWriterInput, writer: AVAssetWriter) throws {
-        var spins = 0
+        // RunLoop.run(until:) returns immediately when the loop is idle, so a
+        // spin count expires while the writer is still .writing (status 1).
+        let deadline = Date().addingTimeInterval(30)
         while !input.isReadyForMoreMediaData {
-            spins += 1
-            if spins > 5000 || writer.status == .failed {
+            if writer.status == .failed || writer.status == .cancelled {
+                throw ClipFactoryError.message(writerDetail(writer, fallback: "кодер зупинився"))
+            }
+            if Date() >= deadline {
                 throw ClipFactoryError.message(writerDetail(writer, fallback: "кодер не встигає"))
             }
-            RunLoop.current.run(until: Date().addingTimeInterval(0.002))
+            pump(0.02)
+        }
+    }
+
+    private static func pump(_ seconds: Double) {
+        let end = Date().addingTimeInterval(seconds)
+        RunLoop.current.run(mode: .common, before: end)
+        let remain = end.timeIntervalSinceNow
+        if remain > 0 {
+            Thread.sleep(forTimeInterval: remain)
         }
     }
 
@@ -266,7 +279,7 @@ enum ClipFactory {
         writer.finishWriting { flag.mark() }
         let deadline = Date().addingTimeInterval(timeout)
         while !flag.isDone && Date() < deadline {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            pump(0.05)
         }
         guard flag.isDone else { throw ClipFactoryError.message("finishWriting timeout") }
         guard writer.status == .completed else {

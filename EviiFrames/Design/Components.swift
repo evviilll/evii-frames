@@ -68,6 +68,7 @@ struct SectionLabel: View {
             .tracking(0.6)
             .foregroundStyle(theme.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityLabel(text)
     }
 }
 
