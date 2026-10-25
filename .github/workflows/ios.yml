@@ -35,7 +35,7 @@ jobs:
           path: |
             tools/weights
             build/models
-          key: rife425-${{ hashFiles('tools/rife425_net.py', 'tools/convert_rife425.py', 'tools/requirements.txt') }}-${{ env.RIFE_SIZES }}
+          key: rife425-${{ hashFiles('tools/rife425_net.py', 'tools/convert_rife425.py', 'tools/requirements.txt') }}-${{ replace(env.RIFE_SIZES, ',', '_') }}
 
       - name: Convert RIFE 4.25
         if: steps.rife-cache.outputs.cache-hit != 'true'
