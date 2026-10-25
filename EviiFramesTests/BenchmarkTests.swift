@@ -1,4 +1,5 @@
 import CoreML
+import CoreVideo
 import XCTest
 @testable import EviiFrames
 
