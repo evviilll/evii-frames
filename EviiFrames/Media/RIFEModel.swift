@@ -54,9 +54,10 @@ final class RIFEModel {
     init(url: URL, height: Int, width: Int) throws {
         self.height = height
         self.width = width
-        // A16 Neural Engine, 6 GB. Prefer the ANE without also reserving the GPU.
-        // `.all` is the fallback when an op (grid_sample) is rejected by the ANE.
-        let units: [MLComputeUnits] = [.cpuAndNeuralEngine, .all, .cpuAndGPU, .cpuOnly]
+        // resample (grid_sample) on the Mac's ALL units, which includes the Neural
+        // Engine, did not match PyTorch at t=0.5. GPU+CPU is the first choice on
+        // the A16. The Neural Engine is only used if the others refuse to load.
+        let units: [MLComputeUnits] = [.cpuAndGPU, .cpuOnly, .all, .cpuAndNeuralEngine]
         var last: Error = PipelineError.modelMissing(url.lastPathComponent)
         var loaded: (MLModel, String)?
         for unit in units {
