@@ -51,8 +51,12 @@ final class FlowsUITests: XCTestCase {
         // The row sits over the tab bar on a short phone. A tap there hits the bar
         // and never pushes Export, so «КОДЕК» never appears.
         bringOnScreen(app, exportRow, bottomClearance: 56)
-        exportRow.tap()
-        XCTAssertTrue(app.buttons["H.264"].waitForExistence(timeout: 8), "Експорт не відкрився")
+        // The center of a row that still overlaps the tab bar hits the bar.
+        exportRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+        XCTAssertTrue(
+            app.buttons["H.264"].waitForExistence(timeout: 8),
+            "Експорт не відкрився row \(exportRow.frame) screen \(screenBounds(app))"
+        )
         XCTAssertTrue(app.staticTexts["КОДЕК"].waitForExistence(timeout: 4), "Секція КОДЕК не читається")
         tap(app, "H.264")
         tap(app, "HEVC")
@@ -179,7 +183,7 @@ final class FlowsUITests: XCTestCase {
         if app.alerts.firstMatch.exists || app.sheets.firstMatch.exists {
             XCTAssertTrue(button.waitForExistence(timeout: 5), title)
         } else {
-            bringOnScreen(app, button, bottomClearance: 56, name: title)
+            bringOnScreen(app, button, bottomClearance: 16, name: title)
         }
         button.tap()
     }
@@ -194,7 +198,14 @@ final class FlowsUITests: XCTestCase {
             let before = element.frame
             let screen = screenBounds(app)
             nudge(app, up: before.midY > screen.midY)
-            let after = element.frame
+            let settled = Date().addingTimeInterval(0.35)
+            var after = element.frame
+            while Date() < settled {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+                let next = element.frame
+                if next.equalTo(after) { break }
+                after = next
+            }
             if after.equalTo(before) { break }
         }
         let screen = screenBounds(app)
@@ -211,12 +222,14 @@ final class FlowsUITests: XCTestCase {
         // XCUIApplication.frame stays 320×480. That stub cannot tell the tab bar
         // from the real bottom edge, so a hittable control is enough.
         guard screen.height >= 500 else { return frame.minY >= 0 }
-        // The SE window is inset (origin y ≈ 52, height ≈ 562, so it ends near
-        // y = 615 on a 667-pt phone). That bottom edge is already the tab bar.
-        // Treating `height` as the bottom coordinate, then subtracting another
-        // 56 pt, marked the x8 pill (y ≈ 545, fully inside the window) as off-screen.
-        let inset: CGFloat = screen.minY >= 20 ? 8 : bottomClearance
-        return frame.minY >= screen.minY - 1 && frame.midY <= screen.maxY - inset
+        // The SE window ends at the tab bar (origin y ≈ 52, height ≈ 562, maxY ≈ 615
+        // on a 667-pt phone). A center 8 pt above that edge still hits the bar, so
+        // «Експорт» never pushes. The whole control has to sit inside the window,
+        // and its center has to clear bottomClearance. A pill that is already fully
+        // inside (x8, bottom ≈ 592) passes a 16 pt clearance; the export row asks for 56.
+        return frame.minY >= screen.minY - 1
+            && frame.maxY <= screen.maxY - 4
+            && frame.midY <= screen.maxY - bottomClearance
     }
 
     /// `app.swipeUp()` drags inside `XCUIApplication.frame`, which stays 320×480
@@ -230,8 +243,8 @@ final class FlowsUITests: XCTestCase {
             let window = app.windows.firstMatch
             host = window.frame.height >= 500 ? window : app
         }
-        let start = host.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: up ? 0.78 : 0.32))
-        let end = host.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: up ? 0.32 : 0.78))
+        let start = host.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: up ? 0.70 : 0.40))
+        let end = host.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: up ? 0.40 : 0.70))
         start.press(forDuration: 0.05, thenDragTo: end)
     }
 
